@@ -1,0 +1,12 @@
+.env
+.git
+.gitignore
+node_modules
+dist
+data
+files
+config/config.toml
+config/config.toml.bak
+*.tar.gz
+__pycache__
+tests

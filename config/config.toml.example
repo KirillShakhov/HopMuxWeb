@@ -1,0 +1,7 @@
+direct_hosts = ["edge"]
+paths = []
+
+[nodes.edge]
+host = "edge.example.com"
+user = "alice"
+key_file = "~/.ssh/id_ed25519"

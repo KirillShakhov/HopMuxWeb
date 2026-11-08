@@ -1,0 +1,9 @@
+.graph-node{background:#1c222b;color:#e8edf2;border:1px solid #3b4653;border-radius:10px;min-width:120px;text-align:center;padding:11px 16px;font-size:12px;box-shadow:0 6px 20px #0003}
+.graph-node.local{background:#1d3440;color:#d5f4f0;border-color:#337986}
+.graph-node.selected{background:#204b52;border-color:#70dfd0}
+.graph-node .react-flow__handle{width:7px;height:7px;background:#6ccac6;border:1px solid #193f45}
+.react-flow__controls{background:#1b2831;border:1px solid #3e535e;border-radius:6px;overflow:hidden}
+.react-flow__controls-button{background:#1b2831;border-color:#3e535e;color:#b7d7d8}
+.react-flow__controls-button svg{fill:#b7d7d8}
+.react-flow__attribution{display:none}
+.resize-handle.vertical{width:100%;height:4px;cursor:row-resize}

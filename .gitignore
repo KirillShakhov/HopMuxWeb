@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.tar.gz
+__pycache__/
+.pytest_cache/
+data/
+config/config.toml
+config/config.toml.bak
+files/
+*.tsbuildinfo
+test-stand/

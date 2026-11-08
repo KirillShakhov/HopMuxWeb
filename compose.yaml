@@ -1,0 +1,15 @@
+services:
+  hopmuxweb:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8000"
+    environment:
+      HOPMUX_TOKEN: ${HOPMUX_TOKEN:?Set a strong HOPMUX_TOKEN in .env}
+    volumes:
+      - ./config:/config
+      - ${SSH_DIR:-${HOME}/.ssh}:/home/hopmux/.ssh:ro
+      - ./files:/files
+      - hopmux-data:/data
+    restart: unless-stopped
+volumes:
+  hopmux-data:

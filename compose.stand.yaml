@@ -1,0 +1,24 @@
+name: hopmuxweb-stand
+services:
+  web:
+    image: hopmuxweb-hopmuxweb:latest
+    user: root
+    ports:
+      - "127.0.0.1:8081:8000"
+    environment:
+      HOPMUX_TOKEN: ${HOPMUX_TOKEN:?Set HOPMUX_TOKEN in .env}
+    volumes:
+      - ./test-stand/config:/config
+      - ./test-stand/files:/files
+      - ./tests:/tests:ro
+      - hopmux-test_stand_keys:/keys:ro
+      - stand-data:/data
+    networks: [stand-front]
+networks:
+  stand-front:
+    external: true
+    name: hopmux-test_front
+volumes:
+  hopmux-test_stand_keys:
+    external: true
+  stand-data:
