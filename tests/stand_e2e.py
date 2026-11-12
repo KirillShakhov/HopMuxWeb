@@ -91,8 +91,17 @@ async def detach_reattach_test():
         async with connect(url, additional_headers=headers) as first:
             state = json.loads(await asyncio.wait_for(first.recv(), 10))
             assert state["writer"] is True
-        listed = request("GET", "/api/sessions")
-        assert any(s["id"] == session["id"] and s["state"] == "connected" for s in listed)
+        deadline = time.monotonic() + 100
+        while time.monotonic() < deadline:
+            listed = request("GET", "/api/sessions")
+            current = next(s for s in listed if s["id"] == session["id"])
+            if current["state"] == "connected":
+                break
+            if current["state"] in ("error", "exited", "disconnected"):
+                raise RuntimeError(f"Terminal failed during connect: {current}")
+            time.sleep(.5)
+        else:
+            raise TimeoutError("Terminal did not become connected")
         async with connect(url, additional_headers=headers) as second:
             state = json.loads(await asyncio.wait_for(second.recv(), 10))
             assert state["writer"] is True
@@ -163,7 +172,10 @@ def failover_test():
 
 
 if __name__ == "__main__":
-    if "--terminal-only" in sys.argv:
+    if "--auto-only" in sys.argv:
+        request("POST", "/api/login", {"token": os.environ["HOPMUX_TOKEN"]})
+        asyncio.run(terminal_test("target", ""))
+    elif "--terminal-only" in sys.argv:
         request("POST", "/api/login", {"token": os.environ["HOPMUX_TOKEN"]})
         position = sys.argv.index("--terminal-only")
         route = sys.argv[position + 1] if len(sys.argv) > position + 1 else "target-4"

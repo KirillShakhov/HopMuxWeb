@@ -1,0 +1,125 @@
+/* HopMuxWeb surface and interaction refinements. */
+:root{color-scheme:dark;--ui-accent:#36bfae;--ui-accent-ink:#08302e}
+html[data-theme=light]{filter:none!important;color-scheme:light;background:#f3f6f8;color:#21313d}
+html[data-theme=light] body{background:#f3f6f8;color:#21313d}
+html[data-theme=light] h1,html[data-theme=light] h2,html[data-theme=light] h3{color:#172d37}
+html[data-theme=light] p,html[data-theme=light] small,html[data-theme=light] .muted{color:#667985}
+html[data-theme=light] .sidebar{background:#fff;border-color:#dce5ea;box-shadow:2px 0 12px #17384906}
+html[data-theme=light] .brand strong{color:#1d333d}
+html[data-theme=light] .brand strong span{color:#138979}
+html[data-theme=light] .nav{color:#637985}
+html[data-theme=light] .nav:hover{background:#edf5f6;color:#1e595d}
+html[data-theme=light] .nav.active{background:#e1f3f0;color:#087d70;box-shadow:inset 3px 0 #16a18f}
+html[data-theme=light] .sidebar-bottom,html[data-theme=light] .connection-pill{color:#748995;border-color:#e1e8ed}
+html[data-theme=light] .topbar{background:#fff;border-color:#dce5ea}
+html[data-theme=light] .breadcrumb{color:#8595a0}
+html[data-theme=light] .breadcrumb strong{color:#29404a}
+html[data-theme=light] .top-actions button,html[data-theme=light] .tab-tool,html[data-theme=light] .tab-add{color:#6d838e}
+html[data-theme=light] .avatar{background:#e8f3f3;border-color:#b4d8d5;color:#166b66}
+html[data-theme=light] .page{background:#f3f6f8}
+html[data-theme=light] .eyebrow{color:#138f80}
+html[data-theme=light] .card,html[data-theme=light] .visual-editor,html[data-theme=light] .visual-list{background:#fff;border-color:#dce5ea;box-shadow:0 2px 8px #1e40500a}
+html[data-theme=light] .subtle,html[data-theme=light] .upload-button{background:#fff;color:#2c4b56!important;border-color:#cedde4}
+html[data-theme=light] .subtle:hover,html[data-theme=light] .upload-button:hover{background:#eaf5f5}
+html[data-theme=light] .primary{background:#078f80;color:#fff;border-color:#078f80!important}
+html[data-theme=light] .primary:hover{background:#08786e}
+html[data-theme=light] .workspace-body{background:#fff;border-color:#d8e3e8}
+html[data-theme=light] .tabstrip{background:#f9fbfc;border-color:#dce5ea}
+html[data-theme=light] .tab{color:#667e8c;border-color:#e2e9ed}
+html[data-theme=light] .tab.selected{background:#fff;color:#165e60;box-shadow:inset 0 3px #1aa996}
+html[data-theme=light] .tab button{color:#80939d}
+html[data-theme=light] .empty-icon{background:#e8f7f4;border-color:#b7e3da;color:#148d7e}
+html[data-theme=light] .empty-panel h3{color:#24424c}
+html[data-theme=light] .statusbar{background:#e3f1f0;color:#477175}
+html[data-theme=light] .search,html[data-theme=light] .field-block select,html[data-theme=light] .form-grid input,html[data-theme=light] .form-grid select,html[data-theme=light] .settings-card input:not([type=checkbox]),html[data-theme=light] .settings-card select,html[data-theme=light] .visual-routes input,html[data-theme=light] .visual-editor .form-grid input,html[data-theme=light] .graph-filter select,html[data-theme=light] .visual-add input,html[data-theme=light] .secret-field input,html[data-theme=light] .secret-field select,html[data-theme=light] .path-step select,html[data-theme=light] .path-card input{background:#fff;color:#233943;border-color:#cad9e0}
+html[data-theme=light] input::placeholder{color:#9aabb3}
+html[data-theme=light] .search input{color:#233943}
+html[data-theme=light] .host-row{color:#263c46}
+html[data-theme=light] .host-row:hover,html[data-theme=light] .host-row.chosen{background:#eff8f6;border-color:#b7dfd7}
+html[data-theme=light] .host-avatar{background:#e6f5f2;color:#138a7d}
+html[data-theme=light] .list-heading,html[data-theme=light] .side-heading{color:#6b808c}
+html[data-theme=light] .list-heading span,html[data-theme=light] .side-heading span{background:#e8f1f3}
+html[data-theme=light] .detail-grid span,html[data-theme=light] .field-block label,html[data-theme=light] .settings-card label,html[data-theme=light] .form-grid label,html[data-theme=light] .visual-routes label{color:#687f8b}
+html[data-theme=light] .detail-grid strong,html[data-theme=light] .version-row strong{color:#2c434d}
+html[data-theme=light] .route-preview{background:#eff8f6;border-color:#aadbd1;color:#27796f}
+html[data-theme=light] .divider{background:#e2e9ed}
+html[data-theme=light] .secondary-actions button{color:#4d6e79}
+html[data-theme=light] .details-empty h3{color:#314954}
+html[data-theme=light] .graph-canvas{background:#f8fbfc}
+html[data-theme=light] .graph-side{background:#fff;border-color:#dce5ea}
+html[data-theme=light] .graph-route-list button{color:#446f76}
+html[data-theme=light] .graph-route-list button.active,html[data-theme=light] .graph-route-list button:hover{background:#e9f6f4;border-color:#b9e0d9}
+html[data-theme=light] .graph-route-list strong{color:#29434e}
+html[data-theme=light] .graph-node{background:#fff;color:#29404a;border-color:#b9ced7;box-shadow:0 4px 15px #2c586012}
+html[data-theme=light] .graph-node.local{background:#e8f4f6;color:#276b74;border-color:#a7d5d8}
+html[data-theme=light] .graph-node.selected,html[data-theme=light] .graph-node.on-route{background:#dff5ee;color:#076f63;border-color:#1ea995}
+html[data-theme=light] .graph-legend{background:#ffffffeb;color:#5f7984;box-shadow:0 2px 9px #1e405017}
+html[data-theme=light] .react-flow__controls{background:#fff;border-color:#d3e1e7}
+html[data-theme=light] .react-flow__controls-button{background:#fff;border-color:#e0e8ec}
+html[data-theme=light] .react-flow__controls-button svg{fill:#53727d}
+html[data-theme=light] .graph-inspector,html[data-theme=light] .inspector-tabs{border-color:#e1e9ed}
+html[data-theme=light] .inspector-body,html[data-theme=light] .inspector-empty{color:#4d6470}
+html[data-theme=light] .segmented{background:#eaf0f3;border-color:#d7e3e8}
+html[data-theme=light] .segmented button{color:#637c87}
+html[data-theme=light] .segmented button.on{background:#fff;color:#087f73;box-shadow:0 1px 5px #1e405017}
+html[data-theme=light] .tool-head{background:#fff;border-color:#e0e7eb}
+html[data-theme=light] .tool-identity strong{color:#2e444e}
+html[data-theme=light] .route-label,html[data-theme=light] .terminal-foot{color:#697f8b}
+html[data-theme=light] .terminal-view{background:#f6f8f9}
+html[data-theme=light] .terminal-canvas{background:#f7f9fa}
+html[data-theme=light] .terminal-foot{background:#fff;border-color:#dce5ea}
+html[data-theme=light] .transfer-history,html[data-theme=light] .transfer-item{border-color:#e2e9ed}
+html[data-theme=light] .transfer-history h3,html[data-theme=light] .transfer-info strong{color:#263d48}
+html[data-theme=light] .settings-icon{background:#e5f5f1;color:#108a7c}
+html[data-theme=light] .settings-card .version-row{border-color:#e1e9ed;color:#728793}
+html[data-theme=light] .raw-editor{border-color:#ccdce3}
+html[data-theme=light] .raw-head,html[data-theme=light] .raw-foot{background:#f3f7f9;border-color:#dce5ea;color:#59717d}
+html[data-theme=light] .login,html[data-theme=light] .loading{background:radial-gradient(circle at 50% 30%,#e3f3f1,#f6f9fa 60%)}
+html[data-theme=light] .login-card{background:#fff;border-color:#d4e4e7;box-shadow:0 25px 70px #315b681c}
+html[data-theme=light] .login-card label{color:#526e7b}
+html[data-theme=light] .login-card input{background:#fff;border-color:#c9dbe1;color:#233a45}
+html[data-theme=light] .single-head{background:#fff;border-bottom:1px solid #dce5ea}
+html[data-theme=light] .single-head button{background:#e6f5f2;color:#0d7c70}
+html[data-theme=light] .toast{background:#fff7f3;border-color:#e9bdaa;color:#9b4c36;box-shadow:0 14px 35px #334d5926}
+html[data-theme=light] .resize-handle{background:#dce8eb}
+html[data-theme=light] .resize-handle:hover{background:#75bcb5}
+/* New controls used by the revised views. */
+.workspace-title{margin-bottom:16px}.workspace-title h1{font-size:25px}.workspace-title p{font-size:12px}.workspace .page-title{flex:none}
+.host-filters{display:flex;gap:6px;flex-wrap:wrap;margin:11px 0 0}.host-filters button{border:1px solid transparent;border-radius:6px;padding:5px 9px;background:transparent;color:#899ca8;font-size:11px}.host-filters button.active{background:#214249;color:#8fe1d6;border-color:#3d7779}
+html[data-theme=light] .host-filters button{color:#607c88}html[data-theme=light] .host-filters button.active{background:#e1f3ef;color:#087a70;border-color:#b2dcd3}
+.host-status-line{font-size:11px;color:#91a8b2;margin-top:17px;display:flex;gap:15px}.host-status-line span{display:flex;align-items:center;gap:5px}
+.trust-warning{padding:8px 12px;background:#332d20;border-bottom:1px solid #685329;color:#e8c889;font-size:11px}.terminal-error{padding:8px 12px;background:#40282b;color:#f1a5aa;font-size:11px}
+html[data-theme=light] .trust-warning{background:#fff8e8;border-color:#ead6a3;color:#846325}html[data-theme=light] .terminal-error{background:#fff0f0;color:#a6454d}
+.new-graph-layout{display:block}.new-graph-layout>.panel-group{height:100%}.graph-side{height:100%}.graph-route-list{flex:1;min-height:80px}.graph-filter{padding:0 12px 10px;display:grid;gap:7px}.graph-filter .search{height:34px}.graph-filter select{padding:7px;border-radius:6px;border:1px solid #35424d;background:#12191e;color:#cbdce1;font-size:11px}.graph-tools{display:flex;gap:4px!important;background:#17232bcc;border:1px solid #3a515b;border-radius:7px;padding:5px!important}.graph-tools button{border:0;background:transparent;color:#bfd4da;padding:6px;font-size:11px;border-radius:4px}.graph-tools button:hover{background:#34525a}
+html[data-theme=light] .graph-tools{background:#fffffff0;border-color:#d1e1e6;box-shadow:0 3px 14px #1d4c5b14}html[data-theme=light] .graph-tools button{color:#4d6d78}html[data-theme=light] .graph-tools button:hover{background:#e8f4f3}
+.graph-node.on-route{border-color:#37c6ad;background:#174139;color:#a7f6e7;box-shadow:0 0 0 3px #2dc3a624}.graph-node.dim{opacity:.34}.react-flow__edge.dim{opacity:.22}.react-flow__edge.on-route{z-index:5}.graph-inspector{border-top:1px solid #304049;min-height:155px}.inspector-tabs{display:flex;border-bottom:1px solid #304049}.inspector-tabs button{flex:1;padding:9px;border:0;background:transparent;color:#839daa;font-size:11px}.inspector-tabs button.active{color:#66d6c8;box-shadow:inset 0 -2px #47c9b9}.inspector-body{padding:13px;color:#aec2cb;font-size:11px}.inspector-body h3{margin:0 0 7px}.inspector-body p{font-size:11px}.inspector-body ol{padding-left:18px}.inspector-body li{padding:3px}.inspector-actions{display:flex;flex-wrap:wrap;gap:5px}.inspector-actions button{border:1px solid #36545d;background:#1c333b;color:#abd7d3;padding:5px 8px;border-radius:5px;display:flex;align-items:center;gap:4px;font-size:10px}.inspector-empty{padding:15px;font-size:11px}
+html[data-theme=light] .inspector-tabs button{color:#6a828e}html[data-theme=light] .inspector-tabs button.active{color:#0b8d80}html[data-theme=light] .inspector-actions button{background:#eaf6f3;border-color:#bcdfd8;color:#16796e}
+.visual-add{display:flex;gap:4px;margin:0 5px 12px}.visual-add input{min-width:0;flex:1;background:#11171d;border:1px solid #35424d;color:#dce9ed;border-radius:5px;padding:7px;font-size:11px}.visual-add button{background:#214a4b;color:#85dbce;border:0;border-radius:5px}.section-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.section-head h2{margin:0 0 4px}.section-head p{margin:0;font-size:11px}.visual-host-section{min-height:180px}.host-fields{grid-template-columns:repeat(3,1fr)}.agent-field{display:flex;align-items:center;gap:10px;margin-top:17px;font-size:12px}.agent-field span{display:flex;flex-direction:column;gap:2px}.agent-field small{font-size:10px}.secret-field{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:18px;padding:11px;border:1px solid #3a4b50;background:#17282c;border-radius:7px;font-size:11px}.secret-field>div{flex:1;min-width:180px}.secret-field small{display:block;font-size:10px;margin-top:3px}.secret-field select,.secret-field input{padding:7px;background:#11171d;border:1px solid #3e535b;border-radius:5px;color:#e2edef;font-size:11px}.secret-status{color:#7bd2c5}.dirty-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#e9b75c;margin-right:5px}
+html[data-theme=light] .secret-field{background:#f3f9f8;border-color:#d6e8e5}html[data-theme=light] .secret-status{color:#128878}
+.direct-hosts{padding:13px;border:1px solid #334a50;border-radius:7px;background:#17252a;margin:17px 0}.direct-hosts strong,.paths-heading strong{font-size:12px}.direct-hosts p{font-size:10px;margin:3px 0 9px}.chip-list{display:flex;flex-wrap:wrap;gap:6px}.chip-list button{border:1px solid #435762;background:#202c33;color:#9cb1bb;border-radius:20px;padding:5px 9px;font-size:10px}.chip-list button.selected{background:#1b4b46;border-color:#3da998;color:#9ee3d7}.paths-heading{display:flex;justify-content:space-between;align-items:center;margin:17px 0 10px}.paths-heading span{font-size:10px;color:#8fa2ac}
+html[data-theme=light] .direct-hosts{background:#f4faf9;border-color:#d4e9e4}html[data-theme=light] .chip-list button{background:#fff;color:#597480;border-color:#ccdde2}html[data-theme=light] .chip-list button.selected{background:#e0f4ed;color:#127b6e;border-color:#81cdbd}
+.path-card{padding:12px;border:1px solid #35444d;border-radius:7px;margin:9px 0;background:#192229}.path-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.path-card-head strong{font-size:11px}.path-card-head>div{display:flex;gap:4px}.path-card-head button,.path-step button{background:transparent;border:0;color:#92a8b3;padding:4px}.path-step{display:flex;align-items:center;gap:6px;margin:5px 0}.path-step>span{width:18px;font-size:10px;color:#8da6b0}.path-step select{flex:1;min-width:0;background:#11171d;color:#dce9ed;border:1px solid #3b4d56;border-radius:5px;padding:7px;font-size:11px}.text-action{display:inline-flex;align-items:center;gap:4px;background:none;border:0;color:#70d2c5;font-size:11px;padding:5px}
+html[data-theme=light] .path-card{background:#fbfdfd;border-color:#d6e3e8}html[data-theme=light] .path-card-head button,html[data-theme=light] .path-step button{color:#728a94}html[data-theme=light] .text-action{color:#118b7c}
+.transfer-explainer{margin:14px 0 0;padding:10px 12px;background:#182e32;border:1px solid #34575b;border-radius:6px;font-size:11px;color:#a7c9ca}.transfer-detail{padding:9px 13px;border:1px solid #3b525b;border-radius:6px;margin:8px 24px;color:#acbdc5;font-size:11px}.settings-check{display:flex!important;align-items:center;gap:8px}
+html[data-theme=light] .transfer-explainer{background:#edf7f5;border-color:#c9e4dd;color:#3c7270}html[data-theme=light] .transfer-detail{border-color:#d7e4e8;color:#5b7581}
+/* Native scrollbars must follow the selected palette. */
+*{scrollbar-width:thin;scrollbar-color:#41535d #18232a}html[data-theme=light] *{scrollbar-color:#bacbd3 #f3f7f9}
+@media(max-width:1100px){.host-fields{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:850px){.host-fields{grid-template-columns:1fr}.graph-tools{max-width:220px;flex-wrap:wrap}.workspace-title{align-items:flex-start}}
+.graph-canvas{height:100%;min-height:0}
+.visual-add button{width:34px!important;flex:0 0 34px;justify-content:center;padding:5px!important}
+html[data-theme=light] .visual-list button{color:#4b6876}
+html[data-theme=light] .visual-list button.active,html[data-theme=light] .visual-list button:hover{background:#e9f6f2;color:#0b7e72}
+.state-pill{text-transform:none}
+html[data-theme=light] .state-pill{color:#617581;border-color:#bfcdd4;background:#f4f7f8}
+html[data-theme=light] .state-pill.connected,html[data-theme=light] .state-pill.done,html[data-theme=light] .state-pill.running{background:#e4f6ed;color:#08765e;border-color:#9dd6bc}
+html[data-theme=light] .state-pill.error,html[data-theme=light] .state-pill.cancelled{background:#fff0ef;color:#a74745;border-color:#ebc2be}
+html[data-theme=light] .state-pill.connecting,html[data-theme=light] .state-pill.verifying_host_key{background:#eff5fb;color:#3c6a8c;border-color:#bfd6e8}
+/* Favorite stars are controls, not browser-default gray buttons. */
+button.favorite{appearance:none;width:30px;height:30px;flex:0 0 30px;display:grid;place-items:center;padding:0;border:0;border-radius:7px;background:transparent;color:#c49b53;transition:background-color .15s,color .15s,transform .15s}
+button.favorite:hover{background:#4b3a1f;color:#f4c66a;transform:scale(1.08)}
+button.favorite.is-favorite{color:#f2bf53}
+button.favorite.is-favorite:hover{color:#ffd77b}
+html[data-theme=light] button.favorite{color:#a9761e;background:transparent}
+html[data-theme=light] button.favorite:hover{background:#fff1d6;color:#895907}
+html[data-theme=light] button.favorite.is-favorite{color:#bd8011}

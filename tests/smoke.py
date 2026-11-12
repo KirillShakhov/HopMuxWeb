@@ -45,6 +45,10 @@ with TestClient(app) as client:
     changed = client.put("/api/config/visual", json={"model": visual, "version": visual["version"], "legacy": visual["legacy"]})
     assert changed.status_code == 200, changed.text
     assert 'user = "bob"' in config.read_text(encoding="utf-8")
+    missing_host = 'direct_hosts = ["edge"]\npaths = [["edge", "ghost"]]\n[nodes.edge]\nhost = "example.org"\nuser = "alice"\nagent = true\n'
+    assert client.post('/api/config/check', json={'text': missing_host}).status_code == 400
+    cyclic_path = 'direct_hosts = ["edge"]\npaths = [["edge", "edge"]]\n[nodes.edge]\nhost = "example.org"\nuser = "alice"\nagent = true\n'
+    assert client.post('/api/config/check', json={'text': cyclic_path}).status_code == 400
     assert client.get("/api/files", params={"path": "../"}).status_code == 400
     assert client.post("/api/transfers", json={"target":"edge", "direction":"upload", "local":"../bad", "remote":"/tmp/bad"}).status_code == 400
     config.write_text('bad = [', encoding='utf-8')
@@ -52,6 +56,30 @@ with TestClient(app) as client:
     assert broken.status_code == 200
     assert broken.json()['parse_error']
     assert broken.json()['text'] == 'bad = ['
+    config.write_text('nodes = { edge = { password = "hidden-inline" } }\nbad = [', encoding='utf-8')
+    broken_secret = client.get('/api/config').json()
+    assert 'hidden-inline' not in str(broken_secret)
+    assert 'Исправьте файл на сервере' in broken_secret['text']
+    config.write_text('bad = [', encoding='utf-8')
     fixed = client.put('/api/config', json={'text': 'direct_hosts = ["edge"]\n[nodes.edge]\nhost = "fixed.example.org"\nuser = "alice"\nagent = true\n', 'version': broken.json()['version']})
     assert fixed.status_code == 200, fixed.text
+    config.write_text('direct_hosts = ["edge"]\n[nodes.edge]\nhost = "example.org"\nuser = "alice"\npassword = "private-value"\n', encoding='utf-8')
+    secret_model = client.get('/api/config').json()
+    assert secret_model['nodes']['edge']['has_inline_password'] is True
+    assert 'private-value' not in str(secret_model)
+    assert '__HOPMUX_REDACTED__' not in secret_model['text']
+    preview = client.post('/api/config/preview', json={'text': secret_model['text'].replace('example.org', 'new.example.org')})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['nodes']['edge']['has_inline_password'] is True
+    assert 'private-value' not in preview.text
+    retained = client.put('/api/config', json={'text': preview.json()['text'], 'version': secret_model['version']})
+    assert retained.status_code == 200, retained.text
+    assert 'password = "private-value"' in config.read_text(encoding='utf-8')
+    assert 'private-value' not in retained.text
+    replaced = client.put('/api/config', json={'text': retained.json()['text'], 'version': retained.json()['version'], 'secret_operations': {'edge': {'action': 'replace', 'value': 'other-value'}}})
+    assert replaced.status_code == 200, replaced.text
+    assert 'password = "other-value"' in config.read_text(encoding='utf-8')
+    removed = client.put('/api/config', json={'text': replaced.json()['text'] + '\nagent = true\n', 'version': replaced.json()['version'], 'secret_operations': {'edge': {'action': 'remove'}}})
+    assert removed.status_code == 200, removed.text
+    assert 'password' not in config.read_text(encoding='utf-8')
 print("Smoke checks passed")
