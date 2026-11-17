@@ -1,6 +1,6 @@
 # HopMuxWeb
 
-Локальная веб-оболочка для [HopMux / `mssh`](https://github.com/KirillShakhov/HopMux). Browser → React/TypeScript → FastAPI + WebSocket → `mssh` CLI → SSH. Dockerfile загружает **точно релиз 1.1.0** по указанной ссылке и сверяет SHA-256 архива перед установкой бинарника.
+Локальная веб-оболочка для MultiHopSSH (`mssh`). Browser → React/TypeScript → FastAPI + WebSocket → `mssh` CLI → SSH. Dockerfile загружает готовый Linux-бинарник `mssh` **v1.2.0** и сверяет его SHA-256 перед установкой. [Релиз MultiHopSSH](https://github.com/KirillShakhov/MultiHopSSH/releases/tag/1.2.0)
 
 ## Запуск
 
@@ -41,7 +41,7 @@ docker compose build
 docker compose ps
 ```
 
-Backend smoke-тест (`tests/smoke.py`) проверяет вход, реальные `mssh config check`, сохранение Raw и Visual, резервную копию, отклонение несуществующих и циклических путей, сохранение и явное изменение секретов, защиту локальных путей. Он рассчитан на Python в Linux/WSL и распакованный релизный бинарник в `/tmp/mssh-linux-x86_64/mssh`.
+Backend smoke-тест (`tests/smoke.py`) проверяет вход, реальные `mssh config check`, сохранение Raw и Visual, резервную копию, отклонение несуществующих и циклических путей, сохранение и явное изменение секретов, защиту локальных путей. Для запуска в Linux или WSL установите зависимости проекта и `httpx`. Тест использует `mssh` из `PATH` или бинарник по пути из `HOPMUX_CLI`.
 
 ## Интеграционный SSH-стенд
 

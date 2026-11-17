@@ -499,8 +499,8 @@ class TerminalSession:
                         if match:
                             node = match.group(1)
                             await self.broadcast({"type": "host_key_rejected", "node": node})
-                elif "SSH shell: attached via" in message:
-                    self.active_route = message.split("SSH shell: attached via", 1)[1].strip()
+                elif route := re.search(r"SSH shell: (?:attached|opening terminal) via (.+)", message):
+                    self.active_route = route[1]
                     await self.set_state("connected")
                 elif "SSH shell:" in message and "disconnected" in message:
                     await self.set_state("disconnected")

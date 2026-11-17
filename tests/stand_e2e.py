@@ -96,6 +96,7 @@ async def detach_reattach_test():
             listed = request("GET", "/api/sessions")
             current = next(s for s in listed if s["id"] == session["id"])
             if current["state"] == "connected":
+                assert current["active_route"].startswith("target-2:"), current
                 break
             if current["state"] in ("error", "exited", "disconnected"):
                 raise RuntimeError(f"Terminal failed during connect: {current}")

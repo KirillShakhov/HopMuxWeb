@@ -14,7 +14,6 @@ os.environ["HOPMUX_CONFIG"] = str(config)
 os.environ["HOPMUX_DATA"] = str(root / "data")
 os.environ["HOPMUX_FILES"] = str(root / "files")
 os.environ["HOPMUX_TOKEN"] = "smoke-token"
-os.environ["HOPMUX_CLI"] = "/tmp/mssh-linux-x86_64/mssh"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from server.app import app, route_model  # noqa: E402
