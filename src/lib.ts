@@ -70,8 +70,16 @@ export type Layout = {
   direction: 'horizontal' | 'vertical';
 };
 
+export const themes = [
+  ['light', 'Светлая'],
+  ['dark', 'Тёмная'],
+  ['pickme', 'Пикми'],
+] as const;
+
+export type Theme = typeof themes[number][0];
+
 export type UiSettings = {
-  theme: 'dark' | 'light';
+  theme: Theme;
   density: 'comfortable' | 'compact';
   fontSize: number;
   scrollback: number;
@@ -84,7 +92,7 @@ export type UiSettings = {
 export type SecretOperation = { action: 'keep' | 'replace' | 'remove'; value?: string };
 
 export const defaultSettings: UiSettings = {
-  theme: 'dark',
+  theme: 'light',
   density: 'comfortable',
   fontSize: 14,
   scrollback: 5000,

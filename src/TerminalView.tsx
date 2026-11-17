@@ -2,7 +2,20 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AlertTriangle, ExternalLink, Minus, RefreshCw, Square, Terminal } from 'lucide-react';
-import { api, stateLabel, type Session, type UiSettings } from './lib';
+import { api, stateLabel, type Session, type Theme, type UiSettings } from './lib';
+
+const lightAnsi = {
+  black: '#242638', red: '#a82936', green: '#087345', yellow: '#805900',
+  blue: '#2449bc', magenta: '#8a347e', cyan: '#076c7c', white: '#555d6e',
+  brightBlack: '#626875', brightRed: '#af202c', brightGreen: '#167847', brightYellow: '#866000',
+  brightBlue: '#3050ba', brightMagenta: '#933b89', brightCyan: '#137481', brightWhite: '#313749',
+};
+
+const terminalColors = {
+  light: { ...lightAnsi, background: '#ffffff', foreground: '#1e2432', cursor: '#3454d1', selectionBackground: '#dbe4ff' },
+  dark: { background: '#111216', foreground: '#e8e8ee', cursor: '#aebaff', selectionBackground: '#3a456e' },
+  pickme: { ...lightAnsi, background: '#fff8fc', foreground: '#392638', cursor: '#a12a72', selectionBackground: '#f6d7ee' },
+} satisfies Record<Theme, NonNullable<XTerminal['options']['theme']>>;
 
 type Props = {
   sessionId: string;
@@ -24,6 +37,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
   const [error, setError] = useState(session?.error || '');
   const [activeRoute, setActiveRoute] = useState(session?.active_route || session?.route || '');
   const [rejectedHost, setRejectedHost] = useState('');
+  const colors = terminalColors[settings.terminalTheme === 'follow' ? settings.theme : settings.terminalTheme];
 
   useEffect(() => {
     if (!session) return;
@@ -34,16 +48,13 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
 
   useEffect(() => {
     if (!root.current) return;
-    const light = settings.terminalTheme === 'light' || settings.terminalTheme === 'follow' && settings.theme === 'light';
     const terminal = new XTerminal({
       cursorBlink: true,
       fontFamily: 'Cascadia Code, Consolas, monospace',
       fontSize: settings.fontSize,
       scrollback: settings.scrollback,
       disableStdin: true,
-      theme: light
-        ? { background: '#f9fbfc', foreground: '#233640', cursor: '#087e79', selectionBackground: '#a9d9d6' }
-        : { background: '#101318', foreground: '#d8dee9', cursor: '#88c0d0', selectionBackground: '#3b536d' },
+      theme: colors,
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -94,7 +105,11 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [sessionId, settings.fontSize, settings.scrollback, settings.terminalTheme, settings.theme]);
+  }, [sessionId, settings.fontSize, settings.scrollback]);
+
+  useEffect(() => {
+    if (terminalRef.current) terminalRef.current.options.theme = colors;
+  }, [colors]);
 
   const warningNodes = session?.warnings || [];
   return <div className="terminal-view">
@@ -122,7 +137,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
       <button onClick={onEditConfig}>Открыть конфиг</button>
     </div>}
     {error && <div className="terminal-error" role="alert">{error}</div>}
-    <div ref={root} className="terminal-canvas" onClick={() => terminalRef.current?.focus()}/>
+    <div ref={root} className="terminal-canvas" style={{ background: colors.background }} onClick={() => terminalRef.current?.focus()}/>
     <div className="terminal-foot"><span>{writer ? '● Ввод активен' : '○ Только просмотр'}</span><span>Ctrl+C отправляет SIGINT · копирование через выделение</span></div>
   </div>;
 }
