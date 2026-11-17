@@ -51,7 +51,10 @@
 .inspector-actions button { display: inline-flex; align-items: center; gap: 4px; padding: 4px 7px; border: 1px solid var(--line-control); border-radius: 6px; background: var(--surface); color: var(--accent-text); font-size: 11px; }
 .inspector-actions button:hover { background: var(--accent-surface); }
 
-.visual-layout { display: grid; grid-template-columns: minmax(165px, 220px) minmax(0, 1fr); flex: 1; min-height: 280px; gap: 12px; }
+.visual-shell { display: flex; flex-direction: column; flex: 1; min-height: 320px; gap: 11px; }
+.visual-section-switch { flex: none; align-self: start; }
+.visual-content { display: flex; flex: 1; min-width: 0; min-height: 0; margin: 0; padding: 0; border: 0; }
+.visual-layout { display: grid; grid-template-columns: minmax(165px, 220px) minmax(0, 1fr); flex: 1; min-height: 0; gap: 12px; }
 .visual-list, .visual-editor { overflow: auto; }
 .visual-list { padding: 8px; }
 .visual-list .side-heading { padding: 5px 4px 8px; }
@@ -62,27 +65,29 @@
 .visual-add button:hover { border-color: var(--accent); }
 .visual-editor { padding: 17px; }
 .visual-editor h2 { font-size: 17px; }
+.visual-routes { width: 100%; }
 .section-head { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 7px; }
 .section-head p { margin-top: 3px; font-size: 12px; }
 .host-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .agent-field { display: flex; align-items: center; gap: 7px; margin-top: 13px; font-size: 12px; }
 .agent-field span { display: grid; }
 .secret-field, .direct-hosts, .path-card { border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-muted); padding: 10px; font-size: 12px; }
-.secret-field { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.secret-field > div { flex: 1 1 150px; }
-.secret-field small { display: block; }
-.secret-field select, .secret-field input { flex: 1 1 120px; }
-.secret-status { color: var(--accent-text); }
+.secret-field { min-width: 0; margin: 14px 0 0; }
+.secret-field legend { padding: 0 4px; font-size: 13px; font-weight: 650; }
+.password-fields { align-items: start; margin-top: 0; }
+.password-fields small, .password-hint { font-size: 11px; font-weight: 400; }
+.password-saved { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 23px; }
+.password-hint { margin-top: 7px; }
+.secret-status { color: var(--good); }
 .hint { margin: 10px 0; font-size: 12px; }
 .direct-hosts { margin: 13px 0; }
 .direct-hosts p { margin: 3px 0 7px; }
 .chip-list { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip-list button { padding: 3px 7px; border: 1px solid var(--line-control); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 11px; }
 .chip-list button.selected { border-color: var(--accent-line); background: var(--accent-surface); color: var(--accent-text); }
-.paths-heading, .path-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.paths-heading span { color: var(--muted); font-size: 11px; }
+.path-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .path-card { margin: 8px 0; }
-.path-card-head > label { flex: 1; }
+.path-card-head > label { display: grid; flex: 1; gap: 4px; }
 .path-card-head > div { display: flex; gap: 3px; }
 .path-card-head button, .path-step button { display: inline-grid; place-items: center; min-width: 24px; height: 24px; padding: 3px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); }
 .path-card-head button:hover, .path-step button:hover { background: var(--hover); color: var(--ink); }
@@ -103,6 +108,7 @@
   .graph-layout { min-height: 560px; }
   .visual-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(360px, 1fr); min-height: 530px; }
   .visual-list { max-height: 150px; }
-  .host-fields { grid-template-columns: 1fr; }
+  .host-fields, .password-fields { grid-template-columns: 1fr; }
+  .password-saved { margin-top: 0; }
   .graph-legend { max-width: calc(100% - 24px); }
 }

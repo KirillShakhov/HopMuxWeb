@@ -21,7 +21,7 @@ export function App() {
   const [token, setToken] = useState('');
   const [section, setSection] = useState<Section>('workspace');
   const [hostToView, setHostToView] = useState('');
-  const [focusHost, setFocusHost] = useState('');
+  const [focusHost, setFocusHost] = useState<string>();
   const [model, setModel] = useState<Model | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -142,7 +142,13 @@ export function App() {
           className={section === key ? 'nav active' : 'nav'}
           aria-current={section === key ? 'page' : undefined}
           title={label}
-          onClick={() => key === 'hosts' ? browseHosts() : setSection(key)}
+          onClick={() => {
+            if (key === 'hosts') browseHosts();
+            else {
+              if (key === 'config') setFocusHost(undefined);
+              setSection(key);
+            }
+          }}
         ><Icon size={18}/><span>{label}</span></button>)}
       </nav>
       <div className="sidebar-bottom">

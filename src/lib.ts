@@ -4,6 +4,7 @@ export type Host = {
   port?: number;
   key_file?: string;
   password_env?: string;
+  password_vault?: string;
   host_key?: string;
   agent?: boolean;
   has_inline_password?: boolean;
