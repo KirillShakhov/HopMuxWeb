@@ -28,7 +28,7 @@ FILES = Path(os.getenv("HOPMUX_FILES", "/files"))
 TOKEN = os.getenv("HOPMUX_TOKEN", "")
 CLI = os.getenv("HOPMUX_CLI", "mssh")
 COOKIE = "hopmux_session"
-REDACTED = "__HOPMUX_REDACTED__"
+REDACTED = "__HOPMUX_REDACTED__"  # accepted only for migration from older browser drafts
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 sessions: dict[str, "TerminalSession"] = {}
 transfers: dict[str, dict[str, Any]] = {}
@@ -125,11 +125,12 @@ def redact_document(raw: str) -> str:
     doc = tomlkit.parse(raw)
     for node in doc.get("nodes", {}).values():
         if "password" in node:
-            node["password"] = REDACTED
+            node.pop("password")
     return tomlkit.dumps(doc)
 
 
-def restore_secrets(candidate: str, original: str) -> str:
+def restore_secrets(candidate: str, original: str, operations: dict | None = None) -> str:
+    operations = operations or {}
     try:
         new = tomlkit.parse(candidate)
     except Exception as exc:
@@ -137,14 +138,26 @@ def restore_secrets(candidate: str, original: str) -> str:
     try:
         old = tomlkit.parse(original)
     except Exception:
-        if REDACTED in candidate:
-            error("Исходный TOML содержит скрытый пароль и ошибку синтаксиса; исправьте файл вручную")
-        return tomlkit.dumps(new)
+        if re.search(r"\bpassword\s*=", original):
+            error("Исходный TOML содержит пароль и ошибку синтаксиса; исправьте файл вручную")
+        old = {}
     for name, node in new.get("nodes", {}).items():
-        if node.get("password") == REDACTED:
-            if name not in old.get("nodes", {}) or "password" not in old["nodes"][name]:
-                error(f"Неизвестный скрытый пароль узла {name}")
-            node["password"] = old["nodes"][name]["password"]
+        old_node = old.get("nodes", {}).get(name, {})
+        operation = operations.get(name, {"action": "keep"})
+        action = operation.get("action", "keep") if isinstance(operation, dict) else "invalid"
+        if action not in ("keep", "replace", "remove"):
+            error(f"Недопустимое действие с паролем узла {name}")
+        if "password" in node:
+            if node["password"] != REDACTED:
+                error(f"Пароль узла {name} изменяется через отдельное поле секрета")
+            node.pop("password")
+        if action == "keep" and "password" in old_node:
+            node["password"] = old_node["password"]
+        elif action == "replace":
+            value = operation.get("value")
+            if not isinstance(value, str) or not value:
+                error(f"Введите новый пароль узла {name}")
+            node["password"] = value
     return tomlkit.dumps(new)
 
 
@@ -189,8 +202,10 @@ def public_model(raw: str):
     try:
         doc = tomlkit.parse(raw)
     except Exception as exc:
-        safe_text = re.sub(r'(?m)^(\s*password\s*=\s*)([^\r\n]+)', lambda match: match.group(1) + '"' + REDACTED + '"', raw)
-        return {"nodes": {}, "direct_hosts": [], "paths": [], "routes": [], "legacy": False, "text": safe_text, "version": version, "parse_error": str(exc)}
+        contains_password = bool(re.search(r"\bpassword\s*=", raw))
+        safe_text = "# TOML содержит пароль и ошибку синтаксиса. Исправьте файл на сервере.\n" if contains_password else raw
+        parse_error = "Ошибка TOML рядом с секретом. Исправьте файл на сервере." if contains_password else str(exc)
+        return {"nodes": {}, "direct_hosts": [], "paths": [], "routes": [], "legacy": False, "text": safe_text, "version": version, "parse_error": parse_error}
     nodes = {}
     for name, node in doc.get("nodes", {}).items():
         nodes[name] = {key: value for key, value in dict(node).items() if key != "password"}
@@ -238,8 +253,94 @@ async def get_config():
 @app.post("/api/config/check")
 async def check_config(request: Request):
     body = await request.json()
-    candidate = restore_secrets(body.get("text", ""), config_text())
+    candidate = restore_secrets(body.get("text", ""), config_text(), body.get("secret_operations"))
     return {"message": await validate_config(candidate)}
+
+
+@app.post("/api/config/preview")
+async def preview_config(request: Request):
+    body = await request.json()
+    candidate = body.get("text", "")
+    if not isinstance(candidate, str):
+        error("Требуется текст TOML")
+    original = config_text()
+    try:
+        candidate = restore_secrets(candidate, original, body.get("secret_operations"))
+    except HTTPException as exc:
+        if "Ошибка TOML" not in str(exc.detail):
+            raise
+        result = public_model(body["text"])
+        result["version"] = hashlib.sha256(original.encode()).hexdigest()
+        return result
+    result = public_model(candidate)
+    result["version"] = hashlib.sha256(original.encode()).hexdigest()
+    return result
+
+
+def compose_visual(raw: str, incoming: dict, legacy: bool) -> str:
+    try:
+        doc = tomlkit.parse(raw)
+    except Exception as exc:
+        error(f"Ошибка TOML: {exc}")
+    if doc.get("include"):
+        error("Visual-редактор не меняет конфигурации с include; используйте Raw TOML")
+    if not isinstance(incoming, dict) or not isinstance(incoming.get("nodes"), dict):
+        error("Требуется список узлов")
+    table = tomlkit.table()
+    for name, values in incoming["nodes"].items():
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            error(f"Недопустимый alias: {name}")
+        if not isinstance(values, dict):
+            error(f"Недопустимые поля узла {name}")
+        node = tomlkit.table()
+        for key, value in values.items():
+            if key in ("has_inline_password", "secret_state"):
+                continue
+            if key == "password":
+                error("Пароль изменяется через отдельное поле секрета")
+            if value is not None and value != "":
+                node[key] = value
+        table[name] = node
+    doc["nodes"] = table
+    if legacy:
+        doc.pop("direct_hosts", None)
+        doc.pop("paths", None)
+        route_items = tomlkit.aot()
+        for item in incoming.get("routes", []):
+            route = tomlkit.table()
+            for key in ("name", "target", "hops", "priority", "disabled", "addresses"):
+                if key in item:
+                    route[key] = item[key]
+            route_items.append(route)
+        doc["routes"] = route_items
+    else:
+        doc.pop("routes", None)
+        doc["direct_hosts"] = incoming.get("direct_hosts", [])
+        doc["paths"] = incoming.get("paths", [])
+    return tomlkit.dumps(doc)
+
+
+@app.post("/api/config/compose")
+async def compose_config(request: Request):
+    body = await request.json()
+    original = config_text()
+    candidate = compose_visual(body.get("text", ""), body.get("model", {}), bool(body.get("legacy")))
+    candidate = restore_secrets(candidate, original, body.get("secret_operations"))
+    result = public_model(candidate)
+    result["version"] = hashlib.sha256(original.encode()).hexdigest()
+    return result
+
+
+def write_config(candidate: str):
+    backup = CONFIG.with_suffix(CONFIG.suffix + ".bak")
+    tmp = CONFIG.with_suffix(CONFIG.suffix + ".new")
+    shutil.copy2(CONFIG, backup)
+    try:
+        tmp.write_text(candidate, encoding="utf-8")
+        os.chmod(tmp, CONFIG.stat().st_mode & 0o777)
+        os.replace(tmp, CONFIG)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 @app.put("/api/config")
@@ -249,17 +350,9 @@ async def put_config(request: Request):
         original = config_text()
         if hashlib.sha256(original.encode()).hexdigest() != body.get("version"):
             error("Конфигурация изменилась на диске. Обновите страницу перед сохранением.", 409)
-        candidate = restore_secrets(body.get("text", ""), original)
+        candidate = restore_secrets(body.get("text", ""), original, body.get("secret_operations"))
         await validate_config(candidate)
-        backup = CONFIG.with_suffix(CONFIG.suffix + ".bak")
-        tmp = CONFIG.with_suffix(CONFIG.suffix + ".new")
-        shutil.copy2(CONFIG, backup)
-        try:
-            tmp.write_text(candidate, encoding="utf-8")
-            os.chmod(tmp, CONFIG.stat().st_mode & 0o777)
-            os.replace(tmp, CONFIG)
-        finally:
-            tmp.unlink(missing_ok=True)
+        write_config(candidate)
         return public_model(candidate)
 
 
@@ -270,54 +363,10 @@ async def put_visual(request: Request):
         original = config_text()
         if hashlib.sha256(original.encode()).hexdigest() != body.get("version"):
             error("Конфигурация изменилась на диске", 409)
-        doc = tomlkit.parse(original)
-        if doc.get("include"):
-            error("Visual-редактор не меняет конфигурации с include; используйте Raw TOML")
-        incoming = body.get("model", {})
-        if not isinstance(incoming.get("nodes"), dict):
-            error("Требуется список узлов")
-        original_nodes = doc.get("nodes", {})
-        table = tomlkit.table()
-        for name, values in incoming["nodes"].items():
-            if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-                error(f"Недопустимый alias: {name}")
-            node = tomlkit.table()
-            for key, value in values.items():
-                if key == "has_inline_password":
-                    continue
-                if key == "password":
-                    error("Пароль задаётся через password_env")
-                if value is not None and value != "":
-                    node[key] = value
-            if name in original_nodes and "password" in original_nodes[name]:
-                node["password"] = original_nodes[name]["password"]
-            table[name] = node
-        doc["nodes"] = table
-        if body.get("legacy"):
-            doc.pop("direct_hosts", None)
-            doc.pop("paths", None)
-            route_items = tomlkit.aot()
-            for item in incoming.get("routes", []):
-                route = tomlkit.table()
-                for key in ("name", "target", "hops", "priority", "disabled", "addresses"):
-                    if key in item:
-                        route[key] = item[key]
-                route_items.append(route)
-            doc["routes"] = route_items
-        else:
-            doc.pop("routes", None)
-            doc["direct_hosts"] = incoming.get("direct_hosts", [])
-            doc["paths"] = incoming.get("paths", [])
-        candidate = tomlkit.dumps(doc)
+        candidate = compose_visual(original, body.get("model", {}), bool(body.get("legacy")))
+        candidate = restore_secrets(candidate, original, body.get("secret_operations"))
         await validate_config(candidate)
-        shutil.copy2(CONFIG, CONFIG.with_suffix(CONFIG.suffix + ".bak"))
-        tmp = CONFIG.with_suffix(CONFIG.suffix + ".new")
-        try:
-            tmp.write_text(candidate, encoding="utf-8")
-            os.chmod(tmp, CONFIG.stat().st_mode & 0o777)
-            os.replace(tmp, CONFIG)
-        finally:
-            tmp.unlink(missing_ok=True)
+        write_config(candidate)
         return public_model(candidate)
 
 
@@ -380,30 +429,87 @@ async def browser_download(path: str):
 
 
 class TerminalSession:
-    def __init__(self, target: str, route: str):
+    def __init__(self, target: str, route: str, warnings: list[dict[str, Any]]):
         self.id = uuid.uuid4().hex
         self.target = target
         self.route = route
         self.state = "connecting"
         self.error = ""
+        self.warnings = warnings
+        self.active_route = route
         self.created = time.time()
         self.master = -1
         self.process = None
         self.clients: set[WebSocket] = set()
         self.writer: WebSocket | None = None
         self.history = deque(maxlen=512)
+        self.stderr_task = None
+
+    async def broadcast(self, message: dict):
+        for client in list(self.clients):
+            try:
+                await client.send_json(message)
+            except Exception:
+                self.clients.discard(client)
+
+    async def set_state(self, state: str, error_text: str = ""):
+        if self.state == state and self.error == error_text:
+            return
+        self.state = state
+        self.error = error_text
+        await self.broadcast({"type": "state", **self.summary()})
+
+    async def emit_output(self, data: bytes):
+        self.history.append(data)
+        for client in list(self.clients):
+            try:
+                await client.send_bytes(data)
+            except Exception:
+                self.clients.discard(client)
 
     async def start(self):
         master, slave = pty.openpty()
         self.master = master
-        args = [CLI, "--config", str(CONFIG)]
+        await self.set_state("connecting")
+        args = [CLI, "--debug", "--config", str(CONFIG)]
         if self.route:
             args += ["--route", self.route]
         args.append(self.target)
-        self.process = await asyncio.create_subprocess_exec(*args, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+        try:
+            self.process = await asyncio.create_subprocess_exec(*args, stdin=slave, stdout=slave, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+        except Exception:
+            os.close(master)
+            os.close(slave)
+            self.master = -1
+            raise
         os.close(slave)
-        self.state = "connected"
+        self.stderr_task = asyncio.create_task(self.read_stderr())
         asyncio.create_task(self.read_loop())
+
+    async def read_stderr(self):
+        while line := await self.process.stderr.readline():
+            message = line.decode(errors="replace").strip()
+            if message.startswith("[debug "):
+                if "SSH shell: trying route" in message:
+                    await self.set_state("connecting")
+                elif "SSH host key on " in message:
+                    await self.set_state("verifying_host_key")
+                    if "rejected" in message:
+                        match = re.search(r" at ([^: ]+): rejected", message)
+                        if match:
+                            node = match.group(1)
+                            await self.broadcast({"type": "host_key_rejected", "node": node})
+                elif "SSH shell: attached via" in message:
+                    self.active_route = message.split("SSH shell: attached via", 1)[1].strip()
+                    await self.set_state("connected")
+                elif "SSH shell:" in message and "disconnected" in message:
+                    await self.set_state("disconnected")
+                continue
+            if message.startswith("warning: SSH host keys are not verified"):
+                continue
+            if message.startswith("mssh:"):
+                self.error = message
+            await self.emit_output(line)
 
     async def read_loop(self):
         loop = asyncio.get_running_loop()
@@ -415,23 +521,17 @@ class TerminalSession:
                     break
                 if not data:
                     break
-                self.history.append(data)
-                for client in list(self.clients):
-                    try:
-                        await client.send_bytes(data)
-                    except Exception:
-                        self.clients.discard(client)
+                await self.emit_output(data)
             await self.process.wait()
-            self.state = "exited" if self.process.returncode == 0 else "error"
-            self.error = f"CLI завершился с кодом {self.process.returncode}" if self.process.returncode else ""
-            for client in list(self.clients):
-                await client.send_json({"type": "state", "state": self.state, "error": self.error})
+            if self.stderr_task:
+                await self.stderr_task
+            await self.set_state("exited" if self.process.returncode == 0 else "error", self.error or (f"CLI завершился с кодом {self.process.returncode}" if self.process.returncode else ""))
         finally:
             os.close(self.master)
             self.master = -1
 
     def summary(self):
-        return {"id": self.id, "target": self.target, "route": self.route, "state": self.state, "error": self.error, "created": self.created}
+        return {"id": self.id, "target": self.target, "route": self.route, "active_route": self.active_route, "state": self.state, "error": self.error, "warnings": self.warnings, "created": self.created}
 
 
 @app.get("/api/sessions")
@@ -446,7 +546,10 @@ async def create_session(request: Request):
     model = public_model(config_text())
     if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target and not r.get("disabled") for r in model["routes"]):
         error("Неизвестный хост или маршрут")
-    session = TerminalSession(target, route)
+    selected_routes = [r for r in model["routes"] if r["target"] == target and not r.get("disabled") and (not route or r["name"] == route)]
+    hops = set(hop for selected_route in selected_routes for hop in selected_route["hops"])
+    warnings = [{"node": node, "kind": "unpinned", "fingerprint": None} for node in sorted(hops) if not model["nodes"][node].get("host_key")]
+    session = TerminalSession(target, route, warnings)
     sessions[session.id] = session
     try:
         await session.start()
@@ -493,7 +596,7 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
     session.clients.add(websocket)
     if session.writer is None:
         session.writer = websocket
-    await websocket.send_json({"type": "state", "state": session.state, "writer": session.writer is websocket, "error": session.error})
+    await websocket.send_json({"type": "state", **session.summary(), "writer": session.writer is websocket})
     for chunk in session.history:
         await websocket.send_bytes(chunk)
     try:
