@@ -22,6 +22,8 @@ from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile, W
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from .vault import COOKIE as VAULT_COOKIE, LEASE_SECONDS, Vault, VaultAccess, master_password, spawn_cli
+
 CONFIG = Path(os.getenv("HOPMUX_CONFIG", "/config/config.toml"))
 DATA = Path(os.getenv("HOPMUX_DATA", "/data"))
 FILES = Path(os.getenv("HOPMUX_FILES", "/files"))
@@ -35,6 +37,7 @@ transfers: dict[str, dict[str, Any]] = {}
 transfer_processes: dict[str, asyncio.subprocess.Process] = {}
 config_lock = asyncio.Lock()
 HISTORY = DATA / "transfers.json"
+vault = Vault(CLI, CONFIG, Path(os.environ["HOPMUX_VAULT_FILE"]) if os.getenv("HOPMUX_VAULT_FILE") else None)
 
 
 def save_history():
@@ -108,9 +111,11 @@ async def auth(request: Request):
 
 
 @app.post("/api/logout")
-async def logout():
+async def logout(request: Request):
+    vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
     response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE, path="/")
+    response.delete_cookie(VAULT_COOKIE, path="/")
     return response
 
 
@@ -152,7 +157,9 @@ def restore_secrets(candidate: str, original: str, operations: dict | None = Non
                 error(f"Пароль узла {name} изменяется через отдельное поле секрета")
             node.pop("password")
         if action == "keep" and "password" in old_node:
-            node["password"] = old_node["password"]
+            # Reinsert the value without the formatting of its old TOML location.
+            password = old_node["password"]
+            node["password"] = password.unwrap() if isinstance(password, tomlkit.items.Item) else password
         elif action == "replace":
             value = operation.get("value")
             if not isinstance(value, str) or not value:
@@ -213,8 +220,8 @@ def public_model(raw: str):
     return {"nodes": nodes, "direct_hosts": list(doc.get("direct_hosts", [])), "paths": [list(p) for p in doc.get("paths", [])], "routes": route_model(doc), "legacy": not bool(doc.get("direct_hosts", []) or doc.get("paths", [])), "text": redact_document(raw), "version": version}
 
 
-async def cli_run(*args: str, timeout: int = 30, input_text: str | None = None):
-    process = await asyncio.create_subprocess_exec(CLI, *args, stdin=asyncio.subprocess.PIPE if input_text is not None else asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+async def cli_run(*args: str, timeout: int = 30, input_text: str | None = None, access: VaultAccess | None = None):
+    process = await spawn_cli(CLI, args, vault=access, stdin=asyncio.subprocess.PIPE if input_text is not None else asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, err = await asyncio.wait_for(process.communicate(input_text.encode() if input_text else None), timeout)
     except asyncio.TimeoutError:
@@ -327,6 +334,8 @@ async def compose_config(request: Request):
     candidate = compose_visual(body.get("text", ""), body.get("model", {}), bool(body.get("legacy")))
     candidate = restore_secrets(candidate, original, body.get("secret_operations"))
     result = public_model(candidate)
+    if result.get("parse_error"):
+        error(result["parse_error"])
     result["version"] = hashlib.sha256(original.encode()).hexdigest()
     return result
 
@@ -375,11 +384,119 @@ async def health():
     return {"ok": True, "cli": CLI, "config_exists": CONFIG.exists()}
 
 
+def vault_access(request: Request, model, target: str, route: str = ""):
+    selected = [item for item in model["routes"]
+                if item["target"] == target and not item.get("disabled") and (not route or item["name"] == route)]
+    entries = [
+        {name for hop in item["hops"] if (name := model["nodes"].get(hop, {}).get("password_vault"))}
+        for item in selected
+    ]
+    return vault.access(request.cookies.get(VAULT_COOKIE), entries)
+
+
+@app.get("/api/vault")
+async def vault_status(request: Request):
+    return JSONResponse(vault.status(request.cookies.get(VAULT_COOKIE)), headers={"Cache-Control": "no-store"})
+
+
+async def open_vault(request: Request, *, create=False):
+    body = await request.json()
+    password = master_password(body.get("password"))
+    if create and body.get("password") != body.get("confirmation"):
+        error("Мастер-пароли не совпадают")
+    token = await vault.unlock(password, create=create)
+    vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
+    response = JSONResponse(vault.status(token), headers={"Cache-Control": "no-store"})
+    response.set_cookie(VAULT_COOKIE, token, max_age=LEASE_SECONDS, httponly=True,
+                        secure=request.url.scheme == "https", samesite="strict")
+    return response
+
+
+@app.post("/api/vault/create")
+async def create_vault(request: Request):
+    return await open_vault(request, create=True)
+
+
+@app.post("/api/vault/unlock")
+async def unlock_vault(request: Request):
+    return await open_vault(request)
+
+
+@app.post("/api/vault/lock")
+async def lock_vault(request: Request):
+    vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
+    response = JSONResponse(vault.status(None))
+    response.delete_cookie(VAULT_COOKIE)
+    return response
+
+
+def entry_name(value):
+    if not isinstance(value, str) or not value:
+        error("Введите имя записи")
+    return value
+
+
+@app.put("/api/vault/entries")
+async def save_vault_entry(request: Request):
+    body = await request.json()
+    name = entry_name(body.get("name"))
+    password = body.get("password")
+    if not isinstance(password, str) or not password:
+        error("Введите пароль для записи")
+
+    def update(entries):
+        if name in entries and body.get("replace") is not True:
+            error("Запись с таким именем уже существует", 409)
+        if name not in entries and body.get("replace") is True:
+            error("Запись не найдена", 404)
+        entries[name] = password
+
+    return await vault.change(request.cookies.get(VAULT_COOKIE), update)
+
+
+@app.delete("/api/vault/entries")
+async def delete_vault_entry(request: Request):
+    name = entry_name((await request.json()).get("name"))
+
+    def update(entries):
+        if name not in entries:
+            error("Запись не найдена", 404)
+        used_by = [host for host, settings in public_model(config_text())["nodes"].items()
+                   if settings.get("password_vault") == name]
+        if used_by:
+            error("Запись используется хостами: " + ", ".join(used_by), 409)
+        del entries[name]
+
+    async with config_lock:
+        return await vault.change(request.cookies.get(VAULT_COOKIE), update)
+
+
+@app.post("/api/vault/rotate")
+async def rotate_vault_password(request: Request):
+    body = await request.json()
+    password = master_password(body.get("password"))
+    if body.get("password") != body.get("confirmation"):
+        error("Мастер-пароли не совпадают")
+    return await vault.change(request.cookies.get(VAULT_COOKIE), lambda entries: None, password=password)
+
+
+@app.get("/api/vault/backup")
+async def encrypted_vault_backup(request: Request):
+    encrypted = vault.read(vault.path())
+    if vault.lease(request.cookies.get(VAULT_COOKIE), encrypted) is None:
+        error("Разблокируйте хранилище mssh", 423)
+    return Response(encrypted, media_type="application/json", headers={
+        "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="vault.json"',
+    })
+
+
 @app.post("/api/probe/{target}")
-async def probe(target: str):
-    if target not in public_model(config_text())["nodes"]:
+async def probe(target: str, request: Request):
+    model = public_model(config_text())
+    if target not in model["nodes"]:
         error("Неизвестный хост", 404)
-    code, out, err = await cli_run("--config", str(CONFIG), "--json", "status", target, timeout=90)
+    access = vault_access(request, model, target)
+    code, out, err = await cli_run("--config", str(CONFIG), "--json", "status", target, timeout=90, access=access)
     if not out.strip():
         error(err.strip() or "Нет ответа от CLI", 502)
     try:
@@ -467,7 +584,7 @@ class TerminalSession:
             except Exception:
                 self.clients.discard(client)
 
-    async def start(self):
+    async def start(self, access: VaultAccess | None = None):
         master, slave = pty.openpty()
         self.master = master
         await self.set_state("connecting")
@@ -476,7 +593,7 @@ class TerminalSession:
             args += ["--route", self.route]
         args.append(self.target)
         try:
-            self.process = await asyncio.create_subprocess_exec(*args, stdin=slave, stdout=slave, stderr=asyncio.subprocess.PIPE, start_new_session=True)
+            self.process = await spawn_cli(args[0], args[1:], vault=access, stdin=slave, stdout=slave, stderr=asyncio.subprocess.PIPE, start_new_session=True)
         except Exception:
             os.close(master)
             os.close(slave)
@@ -547,12 +664,13 @@ async def create_session(request: Request):
     if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target and not r.get("disabled") for r in model["routes"]):
         error("Неизвестный хост или маршрут")
     selected_routes = [r for r in model["routes"] if r["target"] == target and not r.get("disabled") and (not route or r["name"] == route)]
+    access = vault_access(request, model, target, route)
     hops = set(hop for selected_route in selected_routes for hop in selected_route["hops"])
     warnings = [{"node": node, "kind": "unpinned", "fingerprint": None} for node in sorted(hops) if not model["nodes"][node].get("host_key")]
     session = TerminalSession(target, route, warnings)
     sessions[session.id] = session
     try:
-        await session.start()
+        await session.start(access)
     except Exception as exc:
         sessions.pop(session.id, None)
         error(f"Не удалось запустить CLI: {exc}", 500)
@@ -570,15 +688,16 @@ async def terminate_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/reconnect")
-async def reconnect_session(session_id: str):
+async def reconnect_session(session_id: str, request: Request):
     session = sessions.get(session_id)
     if not session:
         error("Сессия не найдена", 404)
     if session.process and session.process.returncode is None and session.master >= 0:
         os.write(session.master, b"\x1d")
     else:
+        access = vault_access(request, public_model(config_text()), session.target, session.route)
         session.history.clear()
-        await session.start()
+        await session.start(access)
     return session.summary()
 
 
@@ -641,7 +760,7 @@ async def create_transfer(request: Request):
     direction = body.get("direction")
     remote = body.get("remote", "")
     model = public_model(config_text())
-    if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target for r in model["routes"]):
+    if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target and not r.get("disabled") for r in model["routes"]):
         error("Неизвестный хост или маршрут")
     if direction not in ("upload", "download") or not isinstance(remote, str) or not remote.startswith("/") or ":" in remote:
         error("Укажите направление и абсолютный удалённый путь")
@@ -650,14 +769,15 @@ async def create_transfer(request: Request):
         error("Локальный файл уже существует", 409)
     if direction == "upload" and not local.is_file() and not local.is_dir():
         error("Локальный источник не найден")
+    access = vault_access(request, model, target, route)
     item = {"id": uuid.uuid4().hex, "target": target, "route": route, "direction": direction, "local": body["local"], "remote": remote, "state": "queued", "created": time.time(), "logs": deque(maxlen=100)}
     transfers[item["id"]] = item
     save_history()
-    asyncio.create_task(run_transfer(item, bool(body.get("recursive")), bool(body.get("verify"))))
+    asyncio.create_task(run_transfer(item, bool(body.get("recursive")), bool(body.get("verify")), access))
     return transfer_public(item)
 
 
-async def run_transfer(item, recursive=False, verify=False):
+async def run_transfer(item, recursive=False, verify=False, access: VaultAccess | None = None):
     args = [CLI, "--config", str(CONFIG)]
     if item["route"]:
         args += ["--route", item["route"]]
@@ -671,7 +791,7 @@ async def run_transfer(item, recursive=False, verify=False):
     args += [local, remote] if item["direction"] == "upload" else [remote, local]
     item["state"] = "running"
     try:
-        process = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL)
+        process = await spawn_cli(args[0], args[1:], vault=access, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL)
         transfer_processes[item["id"]] = process
         while line := await process.stdout.readline():
             item["logs"].append(line.decode(errors="replace").rstrip())

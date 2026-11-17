@@ -69,8 +69,6 @@
 .section-head { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 7px; }
 .section-head p { margin-top: 3px; font-size: 12px; }
 .host-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.agent-field { display: flex; align-items: center; gap: 7px; margin-top: 13px; font-size: 12px; }
-.agent-field span { display: grid; }
 .secret-field, .direct-hosts, .path-card { border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-muted); padding: 10px; font-size: 12px; }
 .secret-field { min-width: 0; margin: 14px 0 0; }
 .secret-field legend { padding: 0 4px; font-size: 13px; font-weight: 650; }

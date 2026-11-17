@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import Editor, { type BeforeMount } from '@monaco-editor/react';
 import { Background, Handle, MarkerType, Panel as FlowPanel, Position, ReactFlow, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -6,6 +6,7 @@ import { Check, Code2, ExternalLink, FileCode2, GitBranch, HardDrive, Maximize2,
 import { findDetourLane, GraphEdge, graphNodeSize } from './GraphEdge';
 import { api, json, routeLabel, type Model, type Route, type SecretOperation, type Theme } from './lib';
 import { VisualRoutes } from './VisualRoutes';
+import { useVault } from './VaultView';
 
 type Props = {
   model: Model | null;
@@ -20,13 +21,19 @@ type Props = {
 type Mode = 'graph' | 'visual' | 'raw';
 type Inspector = 'route' | 'host';
 type VisualSection = 'hosts' | 'routes';
-type PasswordType = 'none' | 'inline' | 'env' | 'vault';
+type AuthMethod = 'key' | 'agent' | 'inline' | 'env' | 'vault';
+type AuthReference = 'key' | 'env' | 'vault';
+
+const authReferences = {
+  key: { field: 'key_file', label: 'путь к файлу ключа' },
+  env: { field: 'password_env', label: 'имя переменной окружения' },
+  vault: { field: 'password_vault', label: 'имя записи в хранилище' },
+} as const;
 
 const hostFields = [
   ['host', 'Адрес / IP'],
   ['user', 'Пользователь'],
   ['port', 'Порт'],
-  ['key_file', 'Файл ключа'],
   ['host_key', 'Отпечаток SHA-256'],
 ] as const;
 
@@ -124,6 +131,9 @@ function graphElements(model: Model | null, selectedRoute: string, selectedHost:
 }
 
 export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, openTransfer, onError }: Props) {
+  const { status: vaultStatus, refresh: refreshVault } = useVault();
+  const vaultEntriesId = useId();
+  useEffect(() => { refreshVault().catch(() => {}); }, [refreshVault]);
   const [stackGraph, setStackGraph] = useState(() => matchMedia('(max-width: 650px)').matches);
   const [mode, setMode] = useState<Mode>('graph');
   const [visualSection, setVisualSection] = useState<VisualSection>('hosts');
@@ -138,7 +148,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
   }, []);
   const [visualDirty, setVisualDirty] = useState(false);
   const [secretOperations, setSecretOperations] = useState<Record<string, SecretOperation>>({});
-  const [passwordTypes, setPasswordTypes] = useState<Partial<Record<string, PasswordType>>>({});
+  const [authMethods, setAuthMethods] = useState<Partial<Record<string, AuthMethod>>>({});
   const [selectedHost, setSelectedHost] = useState('');
   const [selectedRoute, setSelectedRoute] = useState('');
   const [inspector, setInspector] = useState<Inspector>('route');
@@ -156,7 +166,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     setVisual(structuredClone(model));
     setVisualDirty(false);
     setSecretOperations({});
-    setPasswordTypes({});
+    setAuthMethods({});
     if (model.parse_error) { setMode('raw'); setMessage(model.parse_error); }
   }, [model?.version]);
   useEffect(() => {
@@ -168,9 +178,9 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     }
   }, [focusHost]);
 
-  const dirty = !!model && (rawText !== model.text || visualDirty || Object.keys(secretOperations).length > 0
-    || Object.entries(passwordTypes).some(([name, type]) =>
-      type === 'env' && !visual?.nodes[name]?.password_env || type === 'vault' && !visual?.nodes[name]?.password_vault));
+  const missingAuthReference = Object.entries(authMethods).find(([name, method]) =>
+    (method === 'key' || method === 'env' || method === 'vault') && !visual?.nodes[name]?.[authReferences[method].field]);
+  const dirty = !!model && (rawText !== model.text || visualDirty || Object.keys(secretOperations).length > 0 || !!missingAuthReference);
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener('beforeunload', guard);
@@ -212,25 +222,23 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     return () => window.clearTimeout(timer);
   }, [rawText, mode, secretOperations]);
 
-  const validatePasswordDrafts = () => {
+  const validateAuthDrafts = () => {
     for (const [name, operation] of Object.entries(secretOperations)) {
       if (operation.action === 'replace' && !operation.value) throw new Error(`Введите пароль для хоста ${name}`);
     }
-    for (const [name, type] of Object.entries(passwordTypes)) {
-      const node = visual?.nodes[name];
-      if (type === 'env' && !node?.password_env) throw new Error(`Укажите имя переменной окружения для хоста ${name}`);
-      if (type === 'vault' && !node?.password_vault) throw new Error(`Укажите имя записи в хранилище для хоста ${name}`);
-    }
+    const [name, method] = missingAuthReference || [];
+    if (method === 'key' || method === 'env' || method === 'vault')
+      throw new Error(`Укажите ${authReferences[method].label} для хоста ${name}`);
   };
   const switchMode = async (next: Mode) => {
     if (next === mode || busy) return;
     setBusy(true);
     try {
       generation.current++;
-      if (mode === 'visual') validatePasswordDrafts();
+      if (mode === 'visual') validateAuthDrafts();
       if (mode === 'visual' && visualDirty) await compose();
       if (mode === 'raw' && next !== 'raw') await preview();
-      if (next === 'raw') setPasswordTypes({});
+      if (next === 'raw') setAuthMethods({});
       setMode(next);
     } catch (error) { onError(error); } finally { setBusy(false); }
   };
@@ -239,7 +247,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     setBusy(true);
     try {
       generation.current++;
-      validatePasswordDrafts();
+      validateAuthDrafts();
       const candidate = visualDirty ? (await compose()).text : rawText;
       const updated = await api<Model>('/config', json('PUT', { text: candidate, version: model.version, secret_operations: secretOperations }));
       onSaved(updated);
@@ -250,7 +258,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     setBusy(true);
     try {
       generation.current++;
-      validatePasswordDrafts();
+      validateAuthDrafts();
       const candidate = visualDirty ? (await compose()).text : rawText;
       const result = await api<{ message: string }>('/config/check', json('POST', { text: candidate, secret_operations: secretOperations }));
       setMessage(result.message);
@@ -273,23 +281,26 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     });
     setMessage('');
   };
-  const changePasswordType = (type: PasswordType) => {
-    setPasswordTypes(previous => ({ ...previous, [selectedHost]: type }));
+  const changeAuthMethod = (method: AuthMethod) => {
+    setAuthMethods(previous => ({ ...previous, [selectedHost]: method }));
     changeVisual(previous => {
       const host = previous.nodes[selectedHost];
       return { ...previous, nodes: { ...previous.nodes, [selectedHost]: {
         ...host,
-        password_env: type === 'env' ? host.password_env : undefined,
-        password_vault: type === 'vault' ? host.password_vault : undefined,
+        agent: method === 'agent' ? true : undefined,
+        key_file: method === 'key' ? host.key_file : undefined,
+        key_passphrase_env: method === 'key' ? host.key_passphrase_env : undefined,
+        password_env: method === 'env' ? host.password_env : undefined,
+        password_vault: method === 'vault' ? host.password_vault : undefined,
       } } };
     });
     const hasSavedPassword = !!model?.nodes[selectedHost]?.has_inline_password;
-    if (type === 'inline') changeSecretOperation(selectedHost, hasSavedPassword ? undefined : { action: 'replace' });
+    if (method === 'inline') changeSecretOperation(selectedHost, hasSavedPassword ? undefined : { action: 'replace' });
     else changeSecretOperation(selectedHost, hasSavedPassword ? { action: 'remove' } : undefined);
   };
-  const changePasswordReference = (type: 'env' | 'vault', value: string) => {
-    setPasswordTypes(previous => ({ ...previous, [selectedHost]: type }));
-    changeHost(selectedHost, type === 'env' ? 'password_env' : 'password_vault', value);
+  const changeAuthReference = (method: AuthReference, value: string) => {
+    setAuthMethods(previous => ({ ...previous, [selectedHost]: method }));
+    changeHost(selectedHost, authReferences[method].field, value);
   };
   const addHost = () => {
     const name = newHost.trim();
@@ -305,7 +316,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
       const nodes = { ...previous.nodes }; delete nodes[selectedHost];
       return { ...previous, nodes, direct_hosts: previous.direct_hosts.filter(name => name !== selectedHost), paths: previous.paths.filter(path => !path.includes(selectedHost)), routes: previous.routes.filter(route => !route.hops.includes(selectedHost)) };
     });
-    setPasswordTypes(previous => {
+    setAuthMethods(previous => {
       const updated = { ...previous };
       delete updated[selectedHost];
       return updated;
@@ -325,9 +336,10 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
   };
   const secretOperation = secretOperations[selectedHost];
   const hasSavedPassword = secretOperation?.action !== 'remove' && !!model?.nodes[selectedHost]?.has_inline_password;
-  const preferredPasswordType = Object.hasOwn(passwordTypes, selectedHost) ? passwordTypes[selectedHost] : undefined;
-  const passwordType = preferredPasswordType ??
-    (host?.password_env ? 'env' : host?.password_vault ? 'vault' : hasSavedPassword || secretOperation?.action === 'replace' ? 'inline' : 'none');
+  const preferredAuthMethod = Object.hasOwn(authMethods, selectedHost) ? authMethods[selectedHost] : undefined;
+  const authMethod = preferredAuthMethod ??
+    (host?.password_env ? 'env' : host?.password_vault ? 'vault' : hasSavedPassword || secretOperation?.action === 'replace' ? 'inline'
+      : host?.key_file ? 'key' : host?.agent ? 'agent' : '');
 
   return <div className="page config-page">
     <div className="page-title"><div><h1>Конфигурация {dirty && <span className="dirty-dot" title="Есть несохранённые изменения" aria-label="Есть несохранённые изменения"/>}</h1><p>Хосты, маршруты и исходный TOML</p></div><div className="title-actions"><button className="subtle" disabled={busy} onClick={check}><Check size={16}/> Проверить</button><button className="primary" disabled={busy || !model || !dirty} onClick={save}>{busy ? 'Подождите…' : 'Сохранить'}</button></div></div>
@@ -365,22 +377,25 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
                     placeholder={key === 'host_key' ? 'SHA256:…' : undefined}/>
                 </label>)}
               </div>
-              <label className="agent-field">
-                <input type="checkbox" checked={!!host.agent} onChange={event => changeHost(selectedHost, 'agent', event.target.checked)}/>
-                <span><strong>SSH-агент</strong><small>Использовать ключи агента, доступного внутри контейнера</small></span>
-              </label>
               <fieldset className="secret-field">
-                <legend>Пароль SSH</legend>
+                <legend>Аутентификация SSH</legend>
                 <div className="form-grid password-fields">
-                  <label>Тип пароля
-                    <select value={passwordType} onChange={event => changePasswordType(event.target.value as PasswordType)}>
-                      <option value="none">Без пароля</option>
+                  <label>Способ входа
+                    <select value={authMethod} onChange={event => changeAuthMethod(event.target.value as AuthMethod)}>
+                      <option value="" disabled>Выберите способ</option>
+                      <option value="agent">SSH-агент</option>
+                      <option value="key">SSH-ключ</option>
                       <option value="inline">Встроенный пароль</option>
                       <option value="env">Переменная окружения</option>
                       <option value="vault">Хранилище mssh</option>
                     </select>
                   </label>
-                  {passwordType === 'inline' && <>
+                  {authMethod === 'key' && <label>Файл ключа
+                    <input required spellCheck={false} value={host.key_file || ''} placeholder="~/.ssh/id_ed25519"
+                      onChange={event => changeAuthReference('key', event.target.value)}/>
+                    <small>Путь к приватному ключу внутри контейнера.</small>
+                  </label>}
+                  {authMethod === 'inline' && <>
                     {secretOperation?.action === 'replace' ? <div className="password-value">
                       <label>{hasSavedPassword ? 'Новый пароль' : 'Пароль'}
                         <input type="password" autoComplete="new-password" required value={secretOperation.value || ''}
@@ -392,18 +407,21 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
                       <button className="subtle" onClick={() => changeSecretOperation(selectedHost, { action: 'replace' })}>Заменить пароль</button>
                     </div>}
                   </>}
-                  {passwordType === 'env' && <label>Имя переменной окружения
+                  {authMethod === 'env' && <label>Имя переменной окружения
                     <input required spellCheck={false} value={host.password_env || ''} placeholder="SSH_PASSWORD"
-                      onChange={event => changePasswordReference('env', event.target.value)}/>
+                      onChange={event => changeAuthReference('env', event.target.value)}/>
                     <small>Переменная должна быть доступна внутри контейнера.</small>
                   </label>}
-                  {passwordType === 'vault' && <label>Имя записи в хранилище
+                  {authMethod === 'vault' && <label>Имя записи в хранилище
                     <input required spellCheck={false} value={host.password_vault || ''} placeholder="server1"
-                      onChange={event => changePasswordReference('vault', event.target.value)}/>
-                    <small>Запись должна существовать в зашифрованном хранилище mssh.</small>
+                      list={vaultStatus?.unlocked ? vaultEntriesId : undefined}
+                      onChange={event => changeAuthReference('vault', event.target.value)}/>
+                    {vaultStatus?.unlocked && <datalist id={vaultEntriesId}>{vaultStatus.entries.map(name => <option value={name} key={name}/>)}</datalist>}
+                    <small>{vaultStatus?.unlocked ? 'Выберите запись или укажите её имя.' : 'Разблокируйте vault в разделе «Хранилище», чтобы увидеть доступные записи.'}</small>
                   </label>}
                 </div>
-                {passwordType === 'inline' && <p className="password-hint">Сохранённое значение скрыто в интерфейсе и редакторе TOML.</p>}
+                {authMethod === 'inline' && <p className="password-hint">Сохранённое значение скрыто в интерфейсе и редакторе TOML.</p>}
+                {authMethod === 'agent' && <p className="password-hint">Ключи берутся из SSH-агента, доступного внутри контейнера.</p>}
               </fieldset>
             </> : <div className="details-empty"><HardDrive size={30}/><h3>Выберите или добавьте хост</h3></div>}
           </section>

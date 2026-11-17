@@ -7,6 +7,9 @@ data
 files
 config/config.toml
 config/config.toml.bak
+config/vault.json
+config/*.vault
+config/.hopmux-vault-*
 *.tar.gz
 __pycache__
 tests

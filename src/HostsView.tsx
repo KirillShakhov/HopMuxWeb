@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowUpFromLine, GitBranch, HardDrive, Plus, Search, Star, Terminal } from 'lucide-react';
 import { api, routeLabel, stateLabel, stored, type Model, type Session } from './lib';
+import { useVault } from './VaultView';
 
 type Props = {
   model: Model | null;
@@ -13,6 +14,7 @@ type Props = {
 };
 
 export function HostsView({ model, sessions, initialHost, openTerminal, openTransfer, onEdit, onError }: Props) {
+  const { request: vaultRequest } = useVault();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'favorites' | 'recent'>('all');
   const [favorites, setFavorites] = useState<string[]>(() => stored('hopmux-favorites', []));
@@ -45,7 +47,7 @@ export function HostsView({ model, sessions, initialHost, openTerminal, openTran
   const runProbe = async () => {
     setProbe(previous => ({ ...previous, [selected]: 'checking' }));
     try {
-      const result = await api<{ routes: { state: string }[] }>('/probe/' + selected, { method: 'POST' });
+      const result = await vaultRequest(() => api<{ routes: { state: string }[] }>('/probe/' + selected, { method: 'POST' }));
       setProbe(previous => ({ ...previous, [selected]: result.routes.some(route => route.state === 'UP') ? 'up' : 'down' }));
     } catch (error) {
       setProbe(previous => ({ ...previous, [selected]: 'error' }));
@@ -78,7 +80,7 @@ export function HostsView({ model, sessions, initialHost, openTerminal, openTran
       <div className="card details">{host ? <>
         <div className="details-top"><span className="host-avatar large"><HardDrive size={23}/></span><div><h2>{selected}</h2><span className="muted">{host.user}@{host.host}:{host.port || 22}</span></div></div>
         <div className="host-status-line"><span>Сессия: <strong>{activeSession ? stateLabel[activeSession.state] : 'нет активной'}</strong></span><span>Доступность: <strong>{probe[selected] === 'checking' ? 'проверяется' : probe[selected] === 'up' ? 'доступен' : probe[selected] === 'down' ? 'недоступен' : probe[selected] === 'error' ? 'ошибка проверки' : 'не проверялась'}</strong></span></div>
-        <div className="detail-grid"><div><span>Адрес</span><strong>{host.host}</strong></div><div><span>Пользователь</span><strong>{host.user}</strong></div><div><span>Порт</span><strong>{host.port || 22}</strong></div><div><span>Авторизация</span><strong>{host.key_file ? 'SSH-ключ' : host.agent ? 'SSH-агент' : host.password_env ? 'Переменная окружения' : 'Настроена'}</strong></div></div>
+        <div className="detail-grid"><div><span>Адрес</span><strong>{host.host}</strong></div><div><span>Пользователь</span><strong>{host.user}</strong></div><div><span>Порт</span><strong>{host.port || 22}</strong></div><div><span>Авторизация</span><strong>{[host.key_file && 'SSH-ключ', host.agent && 'SSH-агент', host.password_env && 'Переменная окружения', host.password_vault && 'Хранилище mssh', host.has_inline_password && 'Пароль'].filter(Boolean).join(' · ') || 'Не настроена'}</strong></div></div>
         <div className="field-block"><label htmlFor="host-route">Маршрут подключения</label><select id="host-route" value={selectedRoute} onChange={event => setSelectedRoute(event.target.value)}><option value="">Авто — выбрать доступный маршрут</option>{routes.map(route => <option key={route.name} value={route.name}>{route.name} · {routeLabel(route)}</option>)}</select></div>
         <div className="route-preview"><GitBranch size={16}/><span>{chosenRoute ? routeLabel(chosenRoute) : routes.length ? 'mssh выберет доступный маршрут' : 'Маршрут не настроен'}</span></div>
         <div className="details-actions"><button className="primary" disabled={!routes.length} onClick={() => { remember(); openTerminal(selected, selectedRoute); }}><Terminal size={16}/> Открыть терминал</button><button className="subtle" disabled={!routes.length} onClick={() => { remember(); openTransfer(selected, selectedRoute); }}><ArrowUpFromLine size={16}/> Передать файлы</button></div>

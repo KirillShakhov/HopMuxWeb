@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowDownToLine, ArrowUpFromLine, ExternalLink, File, FolderOpen, RefreshCw, Upload, X } from 'lucide-react';
 import { api, json, stateLabel, type Model, type Transfer, type UiSettings } from './lib';
+import { useVault } from './VaultView';
 
 type Props = {
   model: Model | null;
@@ -16,6 +17,7 @@ type Props = {
 };
 
 export function TransferView({ model, transfers, settings, initialTarget = '', initialRoute = '', focusedId, separate = false, onCreated, onRefresh, onError }: Props) {
+  const { request: vaultRequest } = useVault();
   const [target, setTarget] = useState(initialTarget);
   const [route, setRoute] = useState(initialRoute);
   const [direction, setDirection] = useState<'upload' | 'download'>('upload');
@@ -35,7 +37,7 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
     if (settings.confirmTransfer && !confirm(`${direction === 'upload' ? 'Отправить' : 'Скачать'} ${direction === 'upload' ? '/files/' + local : target + ':' + remote} → ${direction === 'upload' ? target + ':' + remote : '/files/' + local}?`)) return;
     setBusy(true);
     try {
-      const created = await api<Transfer>('/transfers', json('POST', { target, route, direction, local, remote, recursive, verify }));
+      const created = await vaultRequest(() => api<Transfer>('/transfers', json('POST', { target, route, direction, local, remote, recursive, verify })));
       setSelectedTask(created.id);
       onCreated?.(created.id);
       onRefresh();

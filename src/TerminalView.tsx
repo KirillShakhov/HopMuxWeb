@@ -3,6 +3,7 @@ import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AlertTriangle, ExternalLink, Minus, RefreshCw, Square, Terminal } from 'lucide-react';
 import { api, stateLabel, type Session, type Theme, type UiSettings } from './lib';
+import { useVault } from './VaultView';
 
 const lightAnsi = {
   black: '#242638', red: '#a82936', green: '#087345', yellow: '#805900',
@@ -28,6 +29,7 @@ type Props = {
 };
 
 export function TerminalView({ sessionId, session, settings, onTerminate, onDetach, onEditConfig, onError }: Props) {
+  const { request: vaultRequest } = useVault();
   const root = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -122,7 +124,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
       </div>
       <div className="tool-actions">
         {!writer && <button title="Взять управление вводом в этом окне" onClick={() => socketRef.current?.send(JSON.stringify({ type: 'claim' }))}>Взять ввод</button>}
-        <button title="Переподключить SSH" aria-label="Переподключить" onClick={() => api('/sessions/' + sessionId + '/reconnect', { method: 'POST' }).catch(onError)}><RefreshCw size={16}/></button>
+        <button title="Переподключить SSH" aria-label="Переподключить" onClick={() => vaultRequest(() => api('/sessions/' + sessionId + '/reconnect', { method: 'POST' })).catch(onError)}><RefreshCw size={16}/></button>
         <button title="Открыть эту же сессию в новом окне" aria-label="В новое окно" onClick={() => window.open('/?session=' + sessionId, '_blank')}><ExternalLink size={16}/></button>
         <button title="Отсоединиться: SSH-процесс продолжит работу" aria-label="Отсоединиться" onClick={onDetach}><Minus size={16}/></button>
         <button title="Завершить SSH-процесс" aria-label="Завершить" onClick={() => onTerminate(sessionId)}><Square size={15}/></button>

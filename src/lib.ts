@@ -107,6 +107,12 @@ export const initialLayout: Layout = {
   panels: [[]], active: {}, maximized: null, direction: 'horizontal',
 };
 
+export class ApiError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
+
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch('/api' + path, {
     credentials: 'same-origin',
@@ -116,7 +122,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* non-JSON error */ }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   return res.json();
 }

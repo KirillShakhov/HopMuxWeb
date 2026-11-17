@@ -6,5 +6,6 @@ import './theme.css';
 import './style.css';
 import './graph.css';
 import { App } from './App';
+import { VaultProvider } from './VaultView';
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
+createRoot(document.getElementById('root')!).render(<React.StrictMode><VaultProvider><App /></VaultProvider></React.StrictMode>);

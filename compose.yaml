@@ -5,6 +5,7 @@ services:
       - "127.0.0.1:8080:8000"
     environment:
       HOPMUX_TOKEN: ${HOPMUX_TOKEN:?Set a strong HOPMUX_TOKEN in .env}
+      HOPMUX_VAULT_FILE: ${HOPMUX_VAULT_FILE:-}
     volumes:
       - ./config:/config
       - ${SSH_DIR:-${HOME}/.ssh}:/home/hopmux/.ssh:ro

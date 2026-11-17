@@ -1,22 +1,25 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, LockKeyhole, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
 import { api, defaultSettings, initialLayout, json, stored, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
 import { TerminalView } from './TerminalView';
 import { HostsView } from './HostsView';
 import { ConfigView } from './ConfigView';
 import { TransferView } from './TransferView';
 import { SettingsView } from './SettingsView';
+import { useVault, VaultView } from './VaultView';
 
-type Section = 'workspace' | 'hosts' | 'config' | 'settings';
+type Section = 'workspace' | 'hosts' | 'config' | 'vault' | 'settings';
 const navItems = [
   ['workspace', LayoutGrid, 'Рабочее место'],
   ['hosts', HardDrive, 'Хосты'],
   ['config', GitBranch, 'Конфигурация'],
+  ['vault', LockKeyhole, 'Хранилище'],
   ['settings', Settings2, 'Настройки'],
 ] as const;
 
 export function App() {
+  const { refresh: refreshVault, request: vaultRequest } = useVault();
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [token, setToken] = useState('');
   const [section, setSection] = useState<Section>('workspace');
@@ -31,7 +34,11 @@ export function App() {
   const [notice, setNotice] = useState('');
   const [singleSession, setSingleSession] = useState(new URLSearchParams(location.search).get('session'));
   const [singleTransfer, setSingleTransfer] = useState(new URLSearchParams(location.search).get('transfer'));
-  const showError = (error: unknown) => setNotice(error instanceof Error ? error.message : String(error));
+  const showError = (error: unknown) => {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
   const reload = async () => {
     const [config, sessionList, transferList] = await Promise.all([api<Model>('/config'), api<Session[]>('/sessions'), api<Transfer[]>('/transfers')]);
     setModel(config); setSessions(sessionList); setTransfers(transferList);
@@ -40,6 +47,7 @@ export function App() {
 
   useEffect(() => { api<{ authenticated: boolean }>('/auth').then(result => setAuthorized(result.authenticated)).catch(() => setAuthorized(false)); }, []);
   useEffect(() => { if (authorized) reload().catch(showError); }, [authorized]);
+  useEffect(() => { if (authorized) refreshVault().catch(() => {}); }, [authorized, refreshVault]);
   useEffect(() => {
     if (!authorized) return;
     const timer = window.setInterval(() => {
@@ -72,7 +80,7 @@ export function App() {
   };
   const openTerminal = async (target: string, route: string) => {
     try {
-      const session = await api<Session>('/sessions', json('POST', { target, route }));
+      const session = await vaultRequest(() => api<Session>('/sessions', json('POST', { target, route })));
       setSessions(previous => [...previous, session]);
       openTab({ id: crypto.randomUUID(), kind: 'terminal', title: target, target, route, sessionId: session.id });
     } catch (error) { showError(error); }
@@ -251,6 +259,7 @@ export function App() {
       </div>}
       {section === 'hosts' && <HostsView model={model} sessions={sessions} initialHost={hostToView} openTerminal={openTerminal} openTransfer={openTransfer} onEdit={editConfig} onError={showError}/>}
       {section === 'config' && <ConfigView model={model} theme={settings.theme} focusHost={focusHost} onSaved={setModel} openTerminal={openTerminal} openTransfer={openTransfer} onError={showError}/>}
+      {section === 'vault' && <VaultView model={model} onError={showError}/>}
       {section === 'settings' && <SettingsView settings={settings} setSettings={setSettings}/>}
     </main>
   </div>;
