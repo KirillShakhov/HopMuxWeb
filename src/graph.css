@@ -7,7 +7,8 @@
 
 .graph-layout, .raw-editor { flex: 1; min-height: 320px; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
 .graph-canvas { position: relative; height: 100%; min-height: 0; background: var(--surface-muted); }
-.graph-node { min-width: 119px; padding: 9px 13px; border: 1px solid var(--line-control); border-radius: 8px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font: 12px var(--mono); text-align: center; }
+.graph-node { display: grid; place-items: center; width: 100%; height: 100%; padding: 0 10px; border: 1px solid var(--line-control); border-radius: 8px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font: 12px var(--mono); text-align: center; }
+.graph-node span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-node.local, .graph-node.selected, .graph-node.on-route { border-color: var(--accent); background: var(--accent-surface); color: var(--accent-text); }
 .graph-node.dim { opacity: .42; }
 .graph-node .react-flow__handle { width: 7px; height: 7px; background: var(--graph-edge); border: 1px solid var(--surface); }
