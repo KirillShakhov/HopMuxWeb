@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AlertTriangle, ExternalLink, Minus, RefreshCw, Square, Terminal } from 'lucide-react';
-import { api, stateLabel, type Session, type Theme, type UiSettings } from './lib';
+import { api, json, stateLabel, type HostKeyWarning, type Model, type Session, type Theme, type UiSettings } from './lib';
 import { useVault } from './VaultView';
 
 const lightAnsi = {
@@ -25,10 +25,11 @@ type Props = {
   onTerminate: (id: string) => void;
   onDetach: () => void;
   onEditConfig: () => void;
+  onConfigSaved: (model: Model) => void;
   onError: (error: unknown) => void;
 };
 
-export function TerminalView({ sessionId, session, settings, onTerminate, onDetach, onEditConfig, onError }: Props) {
+export function TerminalView({ sessionId, session, settings, onTerminate, onDetach, onEditConfig, onConfigSaved, onError }: Props) {
   const { request: vaultRequest } = useVault();
   const root = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerminal | null>(null);
@@ -38,7 +39,8 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
   const [state, setState] = useState(session?.state || 'connecting');
   const [error, setError] = useState(session?.error || '');
   const [activeRoute, setActiveRoute] = useState(session?.active_route || session?.route || '');
-  const [rejectedHost, setRejectedHost] = useState('');
+  const [warnings, setWarnings] = useState<HostKeyWarning[]>(session?.warnings || []);
+  const [savingKey, setSavingKey] = useState(false);
   const colors = terminalColors[settings.terminalTheme === 'follow' ? settings.theme : settings.terminalTheme];
 
   useEffect(() => {
@@ -47,6 +49,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
     setError(session.error);
     setActiveRoute(session.active_route || session.route);
   }, [session?.state, session?.error, session?.active_route, session?.route]);
+  useEffect(() => { if (session?.warnings) setWarnings(session.warnings); }, [session?.warnings]);
 
   useEffect(() => {
     if (!root.current) return;
@@ -80,6 +83,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
         setState(message.state);
         setError(message.error || '');
         setActiveRoute(message.active_route || message.route || '');
+        if (message.warnings) setWarnings(message.warnings);
         if (typeof message.writer === 'boolean') {
           writerRef.current = message.writer;
           setWriter(message.writer);
@@ -89,8 +93,8 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
         writerRef.current = !!message.writer;
         setWriter(!!message.writer);
         terminal.options.disableStdin = !message.writer;
-      } else if (message.type === 'host_key_rejected') {
-        setRejectedHost(message.node);
+      } else if (message.type === 'host_keys') {
+        setWarnings(message.warnings);
       }
     };
     socket.onclose = () => setState(previous => previous === 'error' || previous === 'exited' ? previous : 'disconnected');
@@ -113,7 +117,21 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
     if (terminalRef.current) terminalRef.current.options.theme = colors;
   }, [colors]);
 
-  const warningNodes = session?.warnings || [];
+  const reconnect = () => vaultRequest(() => api('/sessions/' + sessionId + '/reconnect', { method: 'POST' }));
+  const saveHostKey = async (warning: HostKeyWarning) => {
+    const { id, node, fingerprint, expected } = warning;
+    if (!id || !fingerprint || savingKey) return;
+    const endpoint = warning.host ? ` (${warning.host}:${warning.port})` : '';
+    const previous = expected ? `Текущий отпечаток: ${expected}\n` : '';
+    if (!confirm(`Хост ${node}${endpoint}\n${previous}Полученный отпечаток: ${fingerprint}\n\nСверьте отпечаток по доверенному каналу. Сохранить его и переподключить терминал?`)) return;
+    setSavingKey(true);
+    try {
+      const model = await api<Model>('/sessions/' + sessionId + '/host-key', json('PUT', { id, fingerprint }));
+      onConfigSaved(model);
+      await reconnect();
+    } catch (error) { onError(error); } finally { setSavingKey(false); }
+  };
+
   return <div className="terminal-view">
     <div className="tool-head terminal-head">
       <div className="tool-identity">
@@ -124,20 +142,27 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
       </div>
       <div className="tool-actions">
         {!writer && <button title="Взять управление вводом в этом окне" onClick={() => socketRef.current?.send(JSON.stringify({ type: 'claim' }))}>Взять ввод</button>}
-        <button title="Переподключить SSH" aria-label="Переподключить" onClick={() => vaultRequest(() => api('/sessions/' + sessionId + '/reconnect', { method: 'POST' })).catch(onError)}><RefreshCw size={16}/></button>
+        <button title="Переподключить SSH" aria-label="Переподключить" disabled={savingKey} onClick={() => reconnect().catch(onError)}><RefreshCw size={16}/></button>
         <button title="Открыть эту же сессию в новом окне" aria-label="В новое окно" onClick={() => window.open('/?session=' + sessionId, '_blank')}><ExternalLink size={16}/></button>
         <button title="Отсоединиться: SSH-процесс продолжит работу" aria-label="Отсоединиться" onClick={onDetach}><Minus size={16}/></button>
         <button title="Завершить SSH-процесс" aria-label="Завершить" onClick={() => onTerminate(sessionId)}><Square size={15}/></button>
       </div>
     </div>
-    {(warningNodes.length > 0 || rejectedHost) && <div className="trust-warning" role="alert">
+    {warnings.map(warning => <div className={'trust-warning' + (warning.kind === 'unpinned' ? '' : ' mismatch')} role="alert" key={warning.id || warning.node}>
       <AlertTriangle size={17}/>
       <div>
-        <strong>{rejectedHost ? `Ключ хоста ${rejectedHost} отклонён` : 'Ключи SSH не закреплены'}</strong>
-        <span>{warningNodes.length ? warningNodes.map(item => item.node).join(', ') : rejectedHost}. Отпечаток CLI не предоставляет; сверяйте его по доверенному каналу и укажите <code>host_key = "SHA256:…"</code> в TOML.</span>
+        <strong>{warning.kind === 'mismatch' ? 'Отпечаток SSH не совпадает' : warning.kind === 'rejected' ? 'Ключ SSH отклонён' : 'Ключ SSH не закреплён'} · {warning.node}</strong>
+        {warning.route_path && <span className="trust-route">{warning.route_path}</span>}
+        {warning.expected && <span>Закреплённый <code>{warning.expected}</code></span>}
+        {warning.fingerprint ? <span>Полученный <code>{warning.fingerprint}</code></span>
+          : <span>Отпечаток пока недоступен. Его можно указать вручную в конфигурации.</span>}
       </div>
-      <button onClick={onEditConfig}>Открыть конфиг</button>
-    </div>}
+      {warning.id && warning.fingerprint
+        ? <button className={warning.kind === 'mismatch' ? 'danger' : 'subtle'} disabled={savingKey} onClick={() => saveHostKey(warning)}>
+          {warning.kind === 'mismatch' ? 'Заменить отпечаток' : 'Закрепить отпечаток'}
+        </button>
+        : <button className="text-action" onClick={onEditConfig}>Открыть конфиг</button>}
+    </div>)}
     {error && <div className="terminal-error" role="alert">{error}</div>}
     <div ref={root} className="terminal-canvas" style={{ background: colors.background }} onClick={() => terminalRef.current?.focus()}/>
     <div className="terminal-foot"><span>{writer ? '● Ввод активен' : '○ Только просмотр'}</span><span>Ctrl+C отправляет SIGINT · копирование через выделение</span></div>

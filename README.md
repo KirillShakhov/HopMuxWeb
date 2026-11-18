@@ -1,6 +1,6 @@
 # HopMuxWeb
 
-Локальная веб-оболочка для MultiHopSSH (`mssh`). Browser → React/TypeScript → FastAPI + WebSocket → `mssh` CLI → SSH. Dockerfile загружает готовый Linux-бинарник `mssh` **v1.2.0** и сверяет его SHA-256 перед установкой. [Релиз MultiHopSSH](https://github.com/KirillShakhov/MultiHopSSH/releases/tag/1.2.0)
+Локальная веб-оболочка для MultiHopSSH (`mssh`). Browser → React/TypeScript → FastAPI + WebSocket → `mssh` CLI → SSH. Dockerfile загружает релизный Linux-бинарник **v1.2.0** и сверяет его SHA-256. Для терминала Dockerfile собирает тот же тег с патчем, который добавляет отпечаток полученного SSH-ключа в диагностический вывод. [Релиз MultiHopSSH](https://github.com/KirillShakhov/MultiHopSSH/releases/tag/1.2.0)
 
 ## Запуск
 
@@ -27,6 +27,7 @@ docker compose up -d --build
 - Hosts: список, поиск, избранное, автоматический маршрут SSH по умолчанию с возможностью выбрать конкретный, отдельная проверка доступности.
 - Config: граф направленных маршрутов, Visual-редактор хостов/путей, Monaco для TOML; валидация через `mssh config check`, атомарная запись и `.bak`.
 - Terminal: PTY и WebSocket, resize, несколько вкладок/окон, одна активная точка ввода на `session_id`, detach/reconnect/terminate. CLI-процесс остаётся на сервере при закрытии браузера.
+- Ключи SSH: терминал показывает полученный отпечаток для незакреплённого ключа и оба отпечатка при несовпадении. После подтверждения HopMuxWeb сохраняет отпечаток в `host_key` и переподключает терминал с обновлённой конфигурацией.
 - Transfer: local ↔ remote через CLI, выбор маршрута, очередь задач, отмена/повтор, журнал, загрузка из браузера и скачивание в браузер.
 - Workspace: до четырёх панелей, изменение размера, перенос вкладок, восстановление вкладок и раскладки в этом браузере.
 

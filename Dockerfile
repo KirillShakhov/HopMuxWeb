@@ -7,7 +7,7 @@ RUN npm ci --no-audit --no-fund && npm run build
 FROM python:3.12-slim-trixie
 ARG MSSH_URL=https://github.com/KirillShakhov/MultiHopSSH/releases/download/1.2.0/mssh-linux-x86_64
 ARG MSSH_SHA256=4098137e1467de8212e82b6d1ae1b3bc761db4a38191510df72b6ac570ed9ca2
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates openssh-client && rm -rf /var/lib/apt/lists/* \
  && curl -fL --retry 3 "$MSSH_URL" -o /tmp/mssh \
  && echo "$MSSH_SHA256  /tmp/mssh" | sha256sum -c - \
  && install -m 0755 /tmp/mssh /usr/local/bin/mssh \

@@ -29,7 +29,9 @@ DATA = Path(os.getenv("HOPMUX_DATA", "/data"))
 FILES = Path(os.getenv("HOPMUX_FILES", "/files"))
 TOKEN = os.getenv("HOPMUX_TOKEN", "")
 CLI = os.getenv("HOPMUX_CLI", "mssh")
+TERMINAL_CLI = os.getenv("HOPMUX_TERMINAL_CLI", CLI)
 COOKIE = "hopmux_session"
+HOST_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 REDACTED = "__HOPMUX_REDACTED__"  # accepted only for migration from older browser drafts
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 sessions: dict[str, "TerminalSession"] = {}
@@ -545,6 +547,12 @@ async def browser_download(path: str):
     return FileResponse(target, filename=target.name)
 
 
+def terminal_route_hosts(model, target, route):
+    selected = [item for item in model["routes"]
+                if item["target"] == target and not item.get("disabled") and (not route or item["name"] == route)]
+    return {hop for item in selected for hop in item["hops"] if hop in model["nodes"]}
+
+
 class TerminalSession:
     def __init__(self, target: str, route: str, warnings: list[dict[str, Any]]):
         self.id = uuid.uuid4().hex
@@ -552,7 +560,11 @@ class TerminalSession:
         self.route = route
         self.state = "connecting"
         self.error = ""
-        self.warnings = warnings
+        self.warnings = {item["node"]: item for item in warnings}
+        self.host_keys: dict[tuple[str, str], dict[str, Any]] = {}
+        self.updated_keys: dict[str, str] = {}
+        self.reload_config = False
+        self.reconnect_lock = asyncio.Lock()
         self.active_route = route
         self.created = time.time()
         self.master = -1
@@ -561,6 +573,7 @@ class TerminalSession:
         self.writer: WebSocket | None = None
         self.history = deque(maxlen=512)
         self.stderr_task = None
+        self.reader_task = None
 
     async def broadcast(self, message: dict):
         for client in list(self.clients):
@@ -588,7 +601,7 @@ class TerminalSession:
         master, slave = pty.openpty()
         self.master = master
         await self.set_state("connecting")
-        args = [CLI, "--debug", "--config", str(CONFIG)]
+        args = [TERMINAL_CLI, "--debug", "--config", str(CONFIG)]
         if self.route:
             args += ["--route", self.route]
         args.append(self.target)
@@ -601,7 +614,42 @@ class TerminalSession:
             raise
         os.close(slave)
         self.stderr_task = asyncio.create_task(self.read_stderr())
-        asyncio.create_task(self.read_loop())
+        self.reader_task = asyncio.create_task(self.read_loop())
+
+    async def observe_host_key(self, payload: str):
+        try:
+            observed = json.loads(payload)
+        except ValueError:
+            return
+        if not isinstance(observed, dict):
+            return
+        fields = ("node", "route", "route_path", "host", "fingerprint")
+        if any(not isinstance(observed.get(field), str) for field in fields):
+            return
+        expected = observed.get("expected")
+        if not HOST_FINGERPRINT.fullmatch(observed["fingerprint"]) or (
+            expected is not None and (not isinstance(expected, str) or not HOST_FINGERPRINT.fullmatch(expected))
+        ):
+            return
+        if not isinstance(observed.get("port"), int):
+            return
+        observed["expected"] = expected
+        node = observed["node"]
+        key = (node, observed["route_path"])
+        current = self.host_keys.get(key)
+        if not current or any(current.get(field) != observed.get(field) for field in (*fields, "expected", "port")):
+            observed["id"] = uuid.uuid4().hex
+            self.host_keys[key] = observed
+            self.warnings.pop(node, None)
+            await self.broadcast({"type": "host_keys", "warnings": self.host_key_warnings()})
+
+    def host_key_warnings(self):
+        warnings = list(self.warnings.values())
+        for observed in self.host_keys.values():
+            expected = self.updated_keys.get(observed["node"], observed["expected"])
+            if expected != observed["fingerprint"]:
+                warnings.append({**observed, "expected": expected, "kind": "mismatch" if expected else "unpinned"})
+        return warnings
 
     async def read_stderr(self):
         while line := await self.process.stderr.readline():
@@ -609,13 +657,17 @@ class TerminalSession:
             if message.startswith("[debug "):
                 if "SSH shell: trying route" in message:
                     await self.set_state("connecting")
+                elif "] SSH host key observation " in message:
+                    await self.observe_host_key(message.split("] SSH host key observation ", 1)[1])
                 elif "SSH host key on " in message:
                     await self.set_state("verifying_host_key")
                     if "rejected" in message:
                         match = re.search(r" at ([^: ]+): rejected", message)
                         if match:
                             node = match.group(1)
-                            await self.broadcast({"type": "host_key_rejected", "node": node})
+                            if not any(item["node"] == node and item["kind"] == "mismatch" for item in self.host_key_warnings()):
+                                self.warnings[node] = {"node": node, "kind": "rejected", "fingerprint": None}
+                                await self.broadcast({"type": "host_keys", "warnings": self.host_key_warnings()})
                 elif route := re.search(r"SSH shell: (?:attached|opening terminal) via (.+)", message):
                     self.active_route = route[1]
                     await self.set_state("connected")
@@ -648,7 +700,7 @@ class TerminalSession:
             self.master = -1
 
     def summary(self):
-        return {"id": self.id, "target": self.target, "route": self.route, "active_route": self.active_route, "state": self.state, "error": self.error, "warnings": self.warnings, "created": self.created}
+        return {"id": self.id, "target": self.target, "route": self.route, "active_route": self.active_route, "state": self.state, "error": self.error, "warnings": self.host_key_warnings(), "created": self.created}
 
 
 @app.get("/api/sessions")
@@ -663,9 +715,8 @@ async def create_session(request: Request):
     model = public_model(config_text())
     if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target and not r.get("disabled") for r in model["routes"]):
         error("Неизвестный хост или маршрут")
-    selected_routes = [r for r in model["routes"] if r["target"] == target and not r.get("disabled") and (not route or r["name"] == route)]
     access = vault_access(request, model, target, route)
-    hops = set(hop for selected_route in selected_routes for hop in selected_route["hops"])
+    hops = terminal_route_hosts(model, target, route)
     warnings = [{"node": node, "kind": "unpinned", "fingerprint": None} for node in sorted(hops) if not model["nodes"][node].get("host_key")]
     session = TerminalSession(target, route, warnings)
     sessions[session.id] = session
@@ -675,6 +726,50 @@ async def create_session(request: Request):
         sessions.pop(session.id, None)
         error(f"Не удалось запустить CLI: {exc}", 500)
     return session.summary()
+
+
+@app.put("/api/sessions/{session_id}/host-key")
+async def save_host_key(session_id: str, request: Request):
+    session = sessions.get(session_id)
+    if not session:
+        error("Сессия не найдена", 404)
+    body = await request.json()
+    if not isinstance(body, dict):
+        error("Укажите отпечаток")
+    async with config_lock:
+        warning = next((item for item in session.host_key_warnings()
+                        if item.get("id") is not None and item["id"] == body.get("id")), None)
+        if not warning or warning["fingerprint"] != body.get("fingerprint"):
+            error("Отпечаток больше не актуален. Проверьте текущий ключ", 409)
+        original = config_text()
+        model = public_model(original)
+        name = warning["node"]
+        node = model["nodes"].get(name)
+        route = next((item for item in model["routes"]
+                      if item["name"] == warning["route"] and item["target"] == session.target
+                      and name in item["hops"] and not item.get("disabled")
+                      and warning["route_path"] == f"{item['name']}: local -> " + " -> ".join(item["hops"])), None)
+        address = (route.get("addresses") or {}).get(name, node["host"]) if node and route else None
+        if (not node or address != warning["host"] or (node.get("port") or 22) != warning["port"]
+                or node.get("host_key") != warning["expected"]):
+            error("Адрес маршрута или закреплённый отпечаток изменился. Переподключитесь для проверки", 409)
+        doc = tomlkit.parse(original)
+        doc["nodes"][name]["host_key"] = warning["fingerprint"]
+        candidate = tomlkit.dumps(doc)
+        await validate_config(candidate)
+        if config_text() != original:
+            error("Конфигурация изменилась на диске. Повторите проверку отпечатка", 409)
+        if not any(item.get("id") == warning["id"] for item in session.host_key_warnings()):
+            error("Отпечаток изменился во время проверки", 409)
+        write_config(candidate)
+        affected = [item for item in sessions.values() if name in terminal_route_hosts(model, item.target, item.route)]
+        for item in affected:
+            item.updated_keys[name] = warning["fingerprint"]
+            item.warnings.pop(name, None)
+            item.reload_config = True
+    for item in affected:
+        await item.broadcast({"type": "host_keys", "warnings": item.host_key_warnings()})
+    return public_model(candidate)
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -692,11 +787,33 @@ async def reconnect_session(session_id: str, request: Request):
     session = sessions.get(session_id)
     if not session:
         error("Сессия не найдена", 404)
-    if session.process and session.process.returncode is None and session.master >= 0:
-        os.write(session.master, b"\x1d")
-    else:
-        access = vault_access(request, public_model(config_text()), session.target, session.route)
+    async with session.reconnect_lock:
+        running = session.process and session.process.returncode is None and session.master >= 0
+        if running and not session.reload_config:
+            os.write(session.master, b"\x1d")
+            return session.summary()
+        model = public_model(config_text())
+        access = vault_access(request, model, session.target, session.route)
+        if running:
+            try:
+                os.killpg(session.process.pid, signal.SIGTERM)
+                await asyncio.wait_for(session.process.wait(), 3)
+            except ProcessLookupError:
+                pass
+            except TimeoutError:
+                try:
+                    os.killpg(session.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        if session.reader_task:
+            await session.reader_task
         session.history.clear()
+        session.host_keys.clear()
+        session.updated_keys.clear()
+        hops = terminal_route_hosts(model, session.target, session.route)
+        session.warnings = {node: {"node": node, "kind": "unpinned", "fingerprint": None}
+                            for node in hops if not model["nodes"][node].get("host_key")}
+        session.reload_config = False
         await session.start(access)
     return session.summary()
 

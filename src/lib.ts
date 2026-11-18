@@ -31,7 +31,16 @@ export type Model = {
   parse_error?: string;
 };
 
-export type HostKeyWarning = { node: string; kind: string; fingerprint: string | null };
+export type HostKeyWarning = {
+  node: string;
+  kind: 'unpinned' | 'mismatch' | 'rejected';
+  fingerprint: string | null;
+  expected?: string | null;
+  id?: string;
+  host?: string;
+  port?: number;
+  route_path?: string;
+};
 export type Session = {
   id: string;
   target: string;

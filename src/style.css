@@ -314,9 +314,12 @@ code, pre { font-family: var(--mono); }
 .terminal-foot { display: flex; flex: none; justify-content: space-between; align-items: center; gap: 10px; min-height: 26px; padding: 3px 10px; border-top: 1px solid var(--line); background: var(--surface-muted); color: var(--muted); font-size: 11px; }
 .trust-warning, .terminal-error { display: flex; gap: 8px; align-items: center; padding: 8px 10px; font-size: 12px; }
 .trust-warning { flex-wrap: wrap; background: var(--warn-surface); color: var(--warn); }
+.trust-warning.mismatch { background: var(--bad-surface); color: var(--bad); }
 .trust-warning > div { flex: 1 1 180px; min-width: 0; }
 .trust-warning strong, .trust-warning span { display: block; }
-.trust-warning button { border: 0; background: transparent; color: inherit; text-decoration: underline; font-size: 12px; }
+.trust-warning code { overflow-wrap: anywhere; }
+.trust-route { overflow-wrap: anywhere; }
+.trust-warning .text-action { color: inherit; text-decoration: underline; }
 .terminal-error { background: var(--bad-surface); color: var(--bad); overflow-wrap: anywhere; }
 
 .transfer-scroll { overflow: auto; flex: 1; }
