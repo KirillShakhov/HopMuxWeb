@@ -569,6 +569,7 @@ class TerminalSession:
         self.created = time.time()
         self.master = -1
         self.process = None
+        self.terminating = False
         self.clients: set[WebSocket] = set()
         self.writer: WebSocket | None = None
         self.history = deque(maxlen=512)
@@ -600,6 +601,7 @@ class TerminalSession:
     async def start(self, access: VaultAccess | None = None):
         master, slave = pty.openpty()
         self.master = master
+        self.terminating = False
         await self.set_state("connecting")
         args = [TERMINAL_CLI, "--debug", "--config", str(CONFIG)]
         if self.route:
@@ -615,6 +617,24 @@ class TerminalSession:
         os.close(slave)
         self.stderr_task = asyncio.create_task(self.read_stderr())
         self.reader_task = asyncio.create_task(self.read_loop())
+
+    async def stop(self):
+        process = self.process
+        if process and process.returncode is None:
+            self.terminating = True
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), 3)
+            except TimeoutError:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        if self.reader_task:
+            await asyncio.shield(self.reader_task)
 
     async def observe_host_key(self, payload: str):
         try:
@@ -694,7 +714,10 @@ class TerminalSession:
             await self.process.wait()
             if self.stderr_task:
                 await self.stderr_task
-            await self.set_state("exited" if self.process.returncode == 0 else "error", self.error or (f"CLI завершился с кодом {self.process.returncode}" if self.process.returncode else ""))
+            if self.terminating:
+                await self.set_state("exited")
+            else:
+                await self.set_state("exited" if self.process.returncode == 0 else "error", self.error or (f"CLI завершился с кодом {self.process.returncode}" if self.process.returncode else ""))
         finally:
             os.close(self.master)
             self.master = -1
@@ -719,12 +742,11 @@ async def create_session(request: Request):
     hops = terminal_route_hosts(model, target, route)
     warnings = [{"node": node, "kind": "unpinned", "fingerprint": None} for node in sorted(hops) if not model["nodes"][node].get("host_key")]
     session = TerminalSession(target, route, warnings)
-    sessions[session.id] = session
     try:
         await session.start(access)
     except Exception as exc:
-        sessions.pop(session.id, None)
         error(f"Не удалось запустить CLI: {exc}", 500)
+    sessions[session.id] = session
     return session.summary()
 
 
@@ -777,9 +799,9 @@ async def terminate_session(session_id: str):
     session = sessions.get(session_id)
     if not session:
         error("Сессия не найдена", 404)
-    if session.process and session.process.returncode is None:
-        os.killpg(session.process.pid, signal.SIGTERM)
-    return {"ok": True}
+    async with session.reconnect_lock:
+        await session.stop()
+        return {"ok": True, "session": session.summary()}
 
 
 @app.post("/api/sessions/{session_id}/reconnect")
@@ -794,19 +816,7 @@ async def reconnect_session(session_id: str, request: Request):
             return session.summary()
         model = public_model(config_text())
         access = vault_access(request, model, session.target, session.route)
-        if running:
-            try:
-                os.killpg(session.process.pid, signal.SIGTERM)
-                await asyncio.wait_for(session.process.wait(), 3)
-            except ProcessLookupError:
-                pass
-            except TimeoutError:
-                try:
-                    os.killpg(session.process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-        if session.reader_task:
-            await session.reader_task
+        await session.stop()
         session.history.clear()
         session.host_keys.clear()
         session.updated_keys.clear()

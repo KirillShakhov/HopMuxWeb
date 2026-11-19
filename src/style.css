@@ -202,6 +202,7 @@ code, pre { font-family: var(--mono); }
 .empty-connect p { margin: 8px 0 19px; max-width: 34ch; font-size: 13px; }
 .quick-hosts { width: min(310px, 45%); flex: none; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
 .quick-hosts h3 { padding: 13px 14px; }
+.quick-hosts h4 { margin: 0; padding: 7px 14px; border-top: 1px solid var(--line); background: var(--surface-muted); color: var(--muted); font-size: 12px; }
 .quick-host {
   display: flex;
   gap: 9px;

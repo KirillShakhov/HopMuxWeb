@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowUpFromLine, GitBranch, HardDrive, Plus, Search, Star, Terminal } from 'lucide-react';
-import { api, routeLabel, stateLabel, stored, type Model, type Session } from './lib';
+import { api, isResumableSession, routeLabel, sessionLabel, stateLabel, stored, type Model, type Session } from './lib';
 import { useVault } from './VaultView';
 
 type Props = {
@@ -9,12 +9,13 @@ type Props = {
   selectedHost: string;
   onSelectHost: (host: string) => void;
   openTerminal: (target: string, route: string) => void;
+  onResumeSession: (session: Session) => void;
   openTransfer: (target: string, route: string) => void;
   onEdit: (target?: string) => void;
   onError: (error: unknown) => void;
 };
 
-export function HostsView({ model, sessions, selectedHost, onSelectHost, openTerminal, openTransfer, onEdit, onError }: Props) {
+export function HostsView({ model, sessions, selectedHost, onSelectHost, openTerminal, onResumeSession, openTransfer, onEdit, onError }: Props) {
   const { request: vaultRequest } = useVault();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'favorites' | 'recent'>('all');
@@ -22,6 +23,7 @@ export function HostsView({ model, sessions, selectedHost, onSelectHost, openTer
   const [recent, setRecent] = useState<string[]>(() => stored('hopmux-recent', []));
   const selected = selectedHost || Object.keys(model?.nodes || {}).sort()[0] || '';
   const [selectedRoute, setSelectedRoute] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState('');
   const [probe, setProbe] = useState<Record<string, 'checking' | 'up' | 'down' | 'error'>>({});
 
   useEffect(() => { localStorage.setItem('hopmux-favorites', JSON.stringify(favorites)); }, [favorites]);
@@ -36,7 +38,9 @@ export function HostsView({ model, sessions, selectedHost, onSelectHost, openTer
 
   const routes = model?.routes.filter(route => route.target === selected && !route.disabled) || [];
   const host = selected ? model?.nodes[selected] : undefined;
-  const activeSession = sessions.find(session => session.target === selected && ['connected', 'connecting', 'verifying_host_key'].includes(session.state));
+  const activeSessions = sessions.filter(isResumableSession);
+  const hostSessions = activeSessions.filter(session => session.target === selected);
+  const activeSession = hostSessions.find(session => session.id === selectedSessionId) ?? hostSessions.at(-1);
   const chosenRoute = routes.find(route => route.name === selectedRoute);
 
   const remember = () => {
@@ -63,7 +67,7 @@ export function HostsView({ model, sessions, selectedHost, onSelectHost, openTer
         </div>
         <div className="list-heading">Хосты <span>{hosts.length}</span></div>
         {hosts.map(([name, item]) => {
-          const live = sessions.find(session => session.target === name && ['connected', 'connecting', 'verifying_host_key'].includes(session.state));
+          const live = activeSessions.find(session => session.target === name);
           return <div key={name} className={'host-row ' + (selected === name ? 'chosen' : '')}>
             <button className="host-row-main" aria-pressed={selected === name} onClick={() => { setSelectedRoute(''); onSelectHost(name); }}>
               <span className="host-avatar"><HardDrive size={17}/></span>
@@ -82,6 +86,18 @@ export function HostsView({ model, sessions, selectedHost, onSelectHost, openTer
         <div className="field-block"><label htmlFor="host-route">Маршрут подключения</label><select id="host-route" value={selectedRoute} onChange={event => setSelectedRoute(event.target.value)}><option value="">Авто — выбрать доступный маршрут</option>{routes.map(route => <option key={route.name} value={route.name}>{route.name} · {routeLabel(route)}</option>)}</select></div>
         <div className="route-preview"><GitBranch size={16}/><span>{chosenRoute ? routeLabel(chosenRoute) : routes.length ? 'mssh выберет доступный маршрут' : 'Маршрут не настроен'}</span></div>
         <div className="details-actions"><button className="primary" disabled={!routes.length} onClick={() => { remember(); openTerminal(selected, selectedRoute); }}><Terminal size={16}/> Открыть терминал</button><button className="subtle" disabled={!routes.length} onClick={() => { remember(); openTransfer(selected, selectedRoute); }}><ArrowUpFromLine size={16}/> Передать файлы</button></div>
+        {activeSession && <>
+          <div className="divider"/>
+          <div className="field-block">
+            <label htmlFor="host-session">Активная SSH-сессия</label>
+            <select id="host-session" value={activeSession.id} onChange={event => setSelectedSessionId(event.target.value)}>
+              {hostSessions.map(session => <option key={session.id} value={session.id}>
+                {sessionLabel(session)}
+              </option>)}
+            </select>
+            <div className="secondary-actions"><button onClick={() => { remember(); onResumeSession(activeSession); }}><Terminal size={16}/> Вернуться к сессии</button></div>
+          </div>
+        </>}
         <div className="divider"/>
         <div className="secondary-actions"><button onClick={() => onEdit(selected)}>Изменить хост</button><button onClick={runProbe} disabled={probe[selected] === 'checking'}><Activity size={15}/> Проверить доступность</button></div>
       </> : <div className="details-empty"><HardDrive size={30}/><h3>Выберите хост</h3><p>Маршруты и действия появятся здесь.</p></div>}</div>

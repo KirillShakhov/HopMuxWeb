@@ -52,6 +52,15 @@ export type Session = {
   created?: number;
 };
 
+export const isResumableSession = (session: Session) =>
+  ['connected', 'connecting', 'verifying_host_key', 'disconnected'].includes(session.state);
+
+export const sessionLabel = (session: Session) => {
+  const route = session.active_route || session.route || 'Автоматический маршрут';
+  const started = session.created ? new Date(session.created * 1000).toLocaleString('ru-RU') : session.id.slice(0, 8);
+  return `${route} · ${started}`;
+};
+
 export type Transfer = {
   id: string;
   target: string;

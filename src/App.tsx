@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Link, matchPath, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, LockKeyhole, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
-import { api, defaultSettings, initialLayout, json, stored, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
+import { ApiError, api, defaultSettings, initialLayout, isResumableSession, json, sessionLabel, stored, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
 import { TerminalView } from './TerminalView';
 import { HostsView } from './HostsView';
 import { ConfigView } from './ConfigView';
@@ -33,6 +33,7 @@ export function App() {
   const [token, setToken] = useState('');
   const [model, setModel] = useState<Model | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const sessionListVersion = useRef(0);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [settings, setSettings] = useState<UiSettings>(() => ({ ...defaultSettings, ...stored('hopmux-settings', {}) }));
   const [tabs, setTabs] = useState<Tab[]>(() => stored<UiSettings>('hopmux-settings', defaultSettings).restoreTabs ? stored('hopmux-tabs', []) : []);
@@ -43,10 +44,12 @@ export function App() {
       setNotice(error instanceof Error ? error.message : String(error));
     }
   };
-  const reload = async () => {
-    const [config, sessionList, transferList] = await Promise.all([api<Model>('/config'), api<Session[]>('/sessions'), api<Transfer[]>('/transfers')]);
-    setModel(config); setSessions(sessionList); setTransfers(transferList);
+  const reloadSessions = async () => {
+    const version = ++sessionListVersion.current;
+    const sessionList = await api<Session[]>('/sessions');
+    if (version === sessionListVersion.current) setSessions(sessionList);
   };
+  const reload = () => Promise.all([api<Model>('/config').then(setModel), reloadSessions(), api<Transfer[]>('/transfers').then(setTransfers)]);
   const reloadTransfers = () => api<Transfer[]>('/transfers').then(setTransfers).catch(showError);
 
   useEffect(() => { api<{ authenticated: boolean }>('/auth').then(result => setAuthorized(result.authenticated)).catch(() => setAuthorized(false)); }, []);
@@ -55,7 +58,7 @@ export function App() {
   useEffect(() => {
     if (!authorized) return;
     const timer = window.setInterval(() => {
-      api<Session[]>('/sessions').then(setSessions).catch(() => {});
+      reloadSessions().catch(() => {});
       api<Transfer[]>('/transfers').then(setTransfers).catch(() => {});
     }, 3000);
     return () => window.clearInterval(timer);
@@ -83,20 +86,32 @@ export function App() {
     });
     if (section !== '/') navigate('/');
   };
+  const showTerminalSession = (session: Session, panelIndex = 0) => {
+    const tab = tabs.find(item => item.sessionId === session.id);
+    const index = tab ? layout.panels.findIndex(panel => panel.includes(tab.id)) : -1;
+    if (tab && index >= 0) {
+      setLayout(previous => ({
+        ...previous,
+        active: { ...previous.active, [index]: tab.id },
+        maximized: previous.maximized === null ? null : index,
+      }));
+      if (section !== '/') navigate('/');
+      return;
+    }
+    openTab({ id: crypto.randomUUID(), kind: 'terminal', title: session.target, target: session.target, route: session.route, sessionId: session.id }, panelIndex);
+  };
   const openTerminal = async (target: string, route: string, panelIndex = 0) => {
     try {
       const session = await vaultRequest(() => api<Session>('/sessions', json('POST', { target, route })));
-      setSessions(previous => [...previous, session]);
-      openTab({ id: crypto.randomUUID(), kind: 'terminal', title: target, target, route, sessionId: session.id }, panelIndex);
+      sessionListVersion.current++;
+      setSessions(previous => [...previous.filter(item => item.id !== session.id), session]);
+      showTerminalSession(session, panelIndex);
     } catch (error) { showError(error); }
   };
   const openTransfer = (target = '', route = '', panelIndex = 0) => openTab({ id: crypto.randomUUID(), kind: 'transfer', title: target ? `Файлы · ${target}` : 'Передача файлов', target, route }, panelIndex);
   const selectTab = (panelIndex: number, id: string) =>
     setLayout(previous => ({ ...previous, active: { ...previous.active, [panelIndex]: id } }));
-  const closeTab = (id: string) => {
-    const tab = tabs.find(item => item.id === id);
-    const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => item.state === 'running' && (tab.transferId ? item.id === tab.transferId : item.target === tab.target));
-    if (activeTransfer && settings.confirmClose && !confirm('Передача ещё выполняется. Закрыть представление? Задача продолжится на сервере.')) return;
+  const removeTab = (id: string) => {
     setTabs(previous => previous.filter(item => item.id !== id));
     setLayout(previous => {
       const panels = previous.panels.map(panel => panel.filter(item => item !== id));
@@ -123,8 +138,30 @@ export function App() {
     return { ...previous, panels, active, maximized: null };
   });
   const terminate = async (id: string) => {
-    if (!confirm('Завершить SSH-процесс? Это прервёт удалённую shell-сессию.')) return;
-    try { await api('/sessions/' + id, { method: 'DELETE' }); setSessions(await api('/sessions')); } catch (error) { showError(error); }
+    if (!confirm('Завершить SSH-процесс? Это прервёт удалённую shell-сессию.')) return false;
+    try {
+      const { session } = await api<{ session: Session }>('/sessions/' + id, { method: 'DELETE' });
+      sessionListVersion.current++;
+      setSessions(previous => previous.map(item => item.id === id ? session : item));
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 404)) {
+        showError(error);
+        return false;
+      }
+      sessionListVersion.current++;
+      setSessions(previous => previous.filter(item => item.id !== id));
+    }
+    return true;
+  };
+  const closeTab = async (id: string) => {
+    const tab = tabs.find(item => item.id === id);
+    if (tab?.kind === 'terminal' && tab.sessionId) {
+      const session = sessions.find(item => item.id === tab.sessionId);
+      if (session?.state !== 'exited' && session?.state !== 'error' && !await terminate(tab.sessionId)) return;
+    }
+    const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => item.state === 'running' && (tab.transferId ? item.id === tab.transferId : item.target === tab.target));
+    if (activeTransfer && settings.confirmClose && !confirm('Передача ещё выполняется. Закрыть представление? Задача продолжится на сервере.')) return;
+    removeTab(id);
   };
   const editConfig = (host = '', replace = false) =>
     navigate({ pathname: '/config', search: new URLSearchParams({ host }).toString() }, { replace });
@@ -139,11 +176,15 @@ export function App() {
 
   const ThemeIcon = settings.theme === 'dark' ? Moon : settings.theme === 'pickme' ? Sparkles : Sun;
   const LayoutIcon = layout.direction === 'vertical' ? Columns2 : Rows2;
-  const quickHosts = [...new Set([
-    ...stored<string[]>('hopmux-favorites', []),
+  const tabSessionIds = new Set(tabs.map(tab => tab.sessionId));
+  const resumableSessions = sessions.filter(session => isResumableSession(session) && !tabSessionIds.has(session.id));
+  const connectableHosts = new Set(model?.routes.filter(route => !route.disabled).map(route => route.target));
+  const canConnect = (name: string) => Boolean(model?.nodes[name] && connectableHosts.has(name));
+  const favoriteHosts = stored<string[]>('hopmux-favorites', []).filter(canConnect);
+  const quickHosts = favoriteHosts.length ? favoriteHosts : [...new Set([
     ...stored<string[]>('hopmux-recent', []),
     ...Object.keys(model?.nodes || {}).sort(),
-  ])].filter(name => model?.nodes[name] && model.routes.some(route => route.target === name && !route.disabled)).slice(0, 3);
+  ])].filter(canConnect).slice(0, 3);
   const activeSessions = sessions.filter(item => item.state === 'connected').length;
   const activeTransfers = transfers.filter(item => item.state === 'running').length;
 
@@ -224,7 +265,7 @@ export function App() {
 
                         {tab ? <div className="panel-content" key={tab.id}>
                           {tab.kind === 'terminal' && tab.sessionId
-                            ? <TerminalView sessionId={tab.sessionId} session={sessions.find(item => item.id === tab.sessionId)} settings={settings} onTerminate={terminate} onDetach={() => closeTab(tab.id)} onEditConfig={() => editConfig(tab.target)} onConfigSaved={setModel} onError={showError}/>
+                            ? <TerminalView sessionId={tab.sessionId} session={sessions.find(item => item.id === tab.sessionId)} settings={settings} onTerminate={terminate} onDetach={() => removeTab(tab.id)} onEditConfig={() => editConfig(tab.target)} onConfigSaved={setModel} onError={showError}/>
                             : <TransferView model={model} transfers={transfers} settings={settings} initialTarget={tab.target} initialRoute={tab.route} focusedId={tab.transferId} onCreated={transferId => setTabs(previous => previous.map(item => item.id === tab.id ? { ...item, transferId } : item))} onRefresh={reloadTransfers} onError={showError}/>}
                         </div> : <div className="empty-panel">
                           <div className="empty-content">
@@ -237,8 +278,18 @@ export function App() {
                                 <button className="subtle" onClick={() => openTransfer('', '', index)}><ArrowUpFromLine size={16}/> Передать файлы</button>
                               </div>
                             </div>
-                            {quickHosts.length > 0 && <section className="quick-hosts" aria-label="Быстрый доступ к хостам">
+                            {(resumableSessions.length > 0 || quickHosts.length > 0) && <section className="quick-hosts" aria-label="Быстрый доступ к хостам">
                               <h3>Быстрый доступ</h3>
+                              {resumableSessions.length > 0 && <>
+                                <h4>Открытые сессии</h4>
+                                {resumableSessions.map(session => <button className="quick-host" key={session.id} onClick={() => showTerminalSession(session, index)}>
+                                  <span className="host-avatar"><Terminal size={16}/></span>
+                                  <span className="host-main"><strong>{session.target}</strong><small>{sessionLabel(session)}</small></span>
+                                  <ArrowRight size={16}/>
+                                </button>)}
+                              </>}
+                              {favoriteHosts.length > 0 && <h4>Избранные хосты</h4>}
+                              {!favoriteHosts.length && quickHosts.length > 0 && resumableSessions.length > 0 && <h4>Хосты</h4>}
                               {quickHosts.map(name => {
                                 const host = model!.nodes[name];
                                 return <button className="quick-host" key={name} onClick={() => openTerminal(name, '', index)}>
@@ -263,7 +314,7 @@ export function App() {
           </div>
         </div>
       </div>}
-      {section === '/hosts' && <HostsView model={model} sessions={sessions} selectedHost={hostToView} onSelectHost={browseHosts} openTerminal={openTerminal} openTransfer={openTransfer} onEdit={editConfig} onError={showError}/>}
+      {section === '/hosts' && <HostsView model={model} sessions={sessions} selectedHost={hostToView} onSelectHost={browseHosts} openTerminal={openTerminal} onResumeSession={showTerminalSession} openTransfer={openTransfer} onEdit={editConfig} onError={showError}/>}
       {section === '/config' && <ConfigView model={model} theme={settings.theme} focusHost={focusHost} onSaved={setModel} openTerminal={openTerminal} openTransfer={openTransfer} onError={showError}/>}
       {section === '/vault' && <VaultView model={model} onError={showError}/>}
       {section === '/settings' && <SettingsView settings={settings} setSettings={setSettings}/>}
