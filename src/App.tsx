@@ -73,23 +73,26 @@ export function App() {
     return () => window.removeEventListener('beforeunload', guard);
   }, [transfers, settings.confirmClose]);
 
-  const openTab = (tab: Tab) => {
+  const openTab = (tab: Tab, panelIndex = 0) => {
     setTabs(previous => [...previous, tab]);
     setLayout(previous => {
       const panels = previous.panels.map(panel => [...panel]);
-      panels[0].push(tab.id);
-      return { ...previous, panels, active: { ...previous.active, 0: tab.id } };
+      const index = panelIndex < panels.length ? panelIndex : 0;
+      panels[index].push(tab.id);
+      return { ...previous, panels, active: { ...previous.active, [index]: tab.id } };
     });
     if (section !== '/') navigate('/');
   };
-  const openTerminal = async (target: string, route: string) => {
+  const openTerminal = async (target: string, route: string, panelIndex = 0) => {
     try {
       const session = await vaultRequest(() => api<Session>('/sessions', json('POST', { target, route })));
       setSessions(previous => [...previous, session]);
-      openTab({ id: crypto.randomUUID(), kind: 'terminal', title: target, target, route, sessionId: session.id });
+      openTab({ id: crypto.randomUUID(), kind: 'terminal', title: target, target, route, sessionId: session.id }, panelIndex);
     } catch (error) { showError(error); }
   };
-  const openTransfer = (target = '', route = '') => openTab({ id: crypto.randomUUID(), kind: 'transfer', title: target ? `Файлы · ${target}` : 'Передача файлов', target, route });
+  const openTransfer = (target = '', route = '', panelIndex = 0) => openTab({ id: crypto.randomUUID(), kind: 'transfer', title: target ? `Файлы · ${target}` : 'Передача файлов', target, route }, panelIndex);
+  const selectTab = (panelIndex: number, id: string) =>
+    setLayout(previous => ({ ...previous, active: { ...previous.active, [panelIndex]: id } }));
   const closeTab = (id: string) => {
     const tab = tabs.find(item => item.id === id);
     const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => item.state === 'running' && (tab.transferId ? item.id === tab.transferId : item.target === tab.target));
@@ -194,60 +197,63 @@ export function App() {
         <div className="workspace-frame">
           <div className="workspace-body">
             <PanelGroup direction={layout.direction || 'horizontal'} className="panel-group">
-              {layout.panels.map((panel, index) => <Fragment key={index}>
-                {index > 0 && <PanelResizeHandle className={'resize-handle' + (layout.direction === 'vertical' ? ' vertical' : '') + (layout.maximized !== null ? ' hidden-panel' : '')}/>}
-                <Panel minSize={15} defaultSize={100 / layout.panels.length} className={layout.maximized !== null && layout.maximized !== index ? 'hidden-panel' : ''}>
-                  <div className="work-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); moveTab(index, event.dataTransfer.getData('text/tab')); }}>
-                    <div className="tabstrip">
-                      {!panel.length && <span className="tabstrip-label"><LayoutGrid size={15}/> Вкладки</span>}
-                      {panel.map(id => {
-                        const tab = tabs.find(item => item.id === id);
-                        if (!tab) return null;
-                        const isActive = layout.active[index] === id;
-                        return <div key={id} className={'tab' + (isActive ? ' selected' : '')} draggable onDragStart={event => event.dataTransfer.setData('text/tab', id)}>
-                          <button className="tab-select" aria-pressed={isActive} onClick={() => setLayout(previous => ({ ...previous, active: { ...previous.active, [index]: id } }))}>
-                            {tab.kind === 'terminal' ? <Terminal size={15}/> : <ArrowUpFromLine size={15}/>}<span>{tab.title}</span>
-                          </button>
-                          <button className="icon-button tab-close" title={'Закрыть вкладку ' + tab.title} aria-label={'Закрыть ' + tab.title} onClick={() => closeTab(id)}><X size={14}/></button>
-                        </div>;
-                      })}
-                      <button className="icon-button tab-add" title="Новая вкладка передачи" aria-label="Новая вкладка передачи" onClick={() => openTransfer()}><Plus size={17}/></button>
-                      <div className="tab-spacer"/>
-                      <button className="icon-button tab-tool" title="Развернуть или вернуть панель" aria-label="Развернуть или вернуть панель" onClick={() => setLayout(previous => ({ ...previous, maximized: previous.maximized === index ? null : index }))}><Maximize2 size={15}/></button>
-                      {layout.panels.length > 1 && <button className="icon-button tab-tool" title="Убрать панель и перенести её вкладки" aria-label="Убрать панель" onClick={() => removePanel(index)}><Minus size={16}/></button>}
-                    </div>
-
-                    {panel.length ? tabs.filter(tab => tab.id === layout.active[index]).map(tab => <div className="panel-content" key={tab.id}>
-                      {tab.kind === 'terminal' && tab.sessionId
-                        ? <TerminalView sessionId={tab.sessionId} session={sessions.find(item => item.id === tab.sessionId)} settings={settings} onTerminate={terminate} onDetach={() => closeTab(tab.id)} onEditConfig={() => editConfig(tab.target)} onConfigSaved={setModel} onError={showError}/>
-                        : <TransferView model={model} transfers={transfers} settings={settings} initialTarget={tab.target} initialRoute={tab.route} focusedId={tab.transferId} onCreated={transferId => setTabs(previous => previous.map(item => item.id === tab.id ? { ...item, transferId } : item))} onRefresh={reloadTransfers} onError={showError}/>}
-                    </div>) : <div className="empty-panel">
-                      <div className="empty-content">
-                        <div className="empty-connect">
-                          <div className="empty-icon"><Terminal size={28}/></div>
-                          <h2>Нет открытых вкладок</h2>
-                          <p>Подключитесь к хосту по SSH или откройте передачу файлов.</p>
-                          <div className="empty-actions">
-                            <button className="primary" onClick={() => browseHosts()}><Terminal size={16}/> Выбрать хост</button>
-                            <button className="subtle" onClick={() => openTransfer()}><ArrowUpFromLine size={16}/> Передать файлы</button>
-                          </div>
-                        </div>
-                        {layout.panels.length === 1 && quickHosts.length > 0 && <section className="quick-hosts" aria-label="Быстрый доступ к хостам">
-                          <h3>Быстрый доступ</h3>
-                          {quickHosts.map(name => {
-                            const host = model!.nodes[name];
-                            return <button className="quick-host" key={name} onClick={() => browseHosts(name)}>
-                              <span className="host-avatar"><HardDrive size={16}/></span>
-                              <span className="host-main"><strong>{name}</strong><small>{host.user}@{host.host}</small></span>
-                              <ArrowRight size={16}/>
-                            </button>;
+              {layout.panels.map((panel, index) => {
+                const tab = tabs.find(item => item.id === layout.active[index] && panel.includes(item.id));
+                return <Fragment key={index}>
+                    {index > 0 && <PanelResizeHandle className={'resize-handle' + (layout.direction === 'vertical' ? ' vertical' : '') + (layout.maximized !== null ? ' hidden-panel' : '')}/>}
+                    <Panel minSize={15} defaultSize={100 / layout.panels.length} className={layout.maximized !== null && layout.maximized !== index ? 'hidden-panel' : ''}>
+                      <div className="work-panel" onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); moveTab(index, event.dataTransfer.getData('text/tab')); }}>
+                        <div className="tabstrip">
+                          {!panel.length && <span className="tabstrip-label"><LayoutGrid size={15}/> Вкладки</span>}
+                          {panel.map(id => {
+                            const tab = tabs.find(item => item.id === id);
+                            if (!tab) return null;
+                            const isActive = layout.active[index] === id;
+                            return <div key={id} className={'tab' + (isActive ? ' selected' : '')} draggable onDragStart={event => event.dataTransfer.setData('text/tab', id)}>
+                              <button className="tab-select" aria-pressed={isActive} onClick={() => selectTab(index, id)}>
+                                {tab.kind === 'terminal' ? <Terminal size={15}/> : <ArrowUpFromLine size={15}/>}<span>{tab.title}</span>
+                              </button>
+                              <button className="icon-button tab-close" title={'Закрыть вкладку ' + tab.title} aria-label={'Закрыть ' + tab.title} onClick={() => closeTab(id)}><X size={14}/></button>
+                            </div>;
                           })}
-                        </section>}
+                          <button className="icon-button tab-add" title="Показать экран выбора" aria-label="Показать экран выбора" onClick={() => selectTab(index, '')}><Plus size={17}/></button>
+                          <div className="tab-spacer"/>
+                          <button className="icon-button tab-tool" title="Развернуть или вернуть панель" aria-label="Развернуть или вернуть панель" onClick={() => setLayout(previous => ({ ...previous, maximized: previous.maximized === index ? null : index }))}><Maximize2 size={15}/></button>
+                          {layout.panels.length > 1 && <button className="icon-button tab-tool" title="Убрать панель и перенести её вкладки" aria-label="Убрать панель" onClick={() => removePanel(index)}><Minus size={16}/></button>}
+                        </div>
+
+                        {tab ? <div className="panel-content" key={tab.id}>
+                          {tab.kind === 'terminal' && tab.sessionId
+                            ? <TerminalView sessionId={tab.sessionId} session={sessions.find(item => item.id === tab.sessionId)} settings={settings} onTerminate={terminate} onDetach={() => closeTab(tab.id)} onEditConfig={() => editConfig(tab.target)} onConfigSaved={setModel} onError={showError}/>
+                            : <TransferView model={model} transfers={transfers} settings={settings} initialTarget={tab.target} initialRoute={tab.route} focusedId={tab.transferId} onCreated={transferId => setTabs(previous => previous.map(item => item.id === tab.id ? { ...item, transferId } : item))} onRefresh={reloadTransfers} onError={showError}/>}
+                        </div> : <div className="empty-panel">
+                          <div className="empty-content">
+                            <div className="empty-connect">
+                              <div className="empty-icon"><Terminal size={28}/></div>
+                              <h2>{panel.length ? 'Подключение и передача файлов' : 'Нет открытых вкладок'}</h2>
+                              <p>Подключитесь к хосту по SSH или откройте передачу файлов.</p>
+                              <div className="empty-actions">
+                                <button className="primary" onClick={() => browseHosts()}><Terminal size={16}/> Выбрать хост</button>
+                                <button className="subtle" onClick={() => openTransfer('', '', index)}><ArrowUpFromLine size={16}/> Передать файлы</button>
+                              </div>
+                            </div>
+                            {quickHosts.length > 0 && <section className="quick-hosts" aria-label="Быстрый доступ к хостам">
+                              <h3>Быстрый доступ</h3>
+                              {quickHosts.map(name => {
+                                const host = model!.nodes[name];
+                                return <button className="quick-host" key={name} onClick={() => openTerminal(name, '', index)}>
+                                  <span className="host-avatar"><HardDrive size={16}/></span>
+                                  <span className="host-main"><strong>{name}</strong><small>{host.user}@{host.host}</small></span>
+                                  <ArrowRight size={16}/>
+                                </button>;
+                              })}
+                            </section>}
+                          </div>
+                        </div>}
                       </div>
-                    </div>}
-                  </div>
-                </Panel>
-              </Fragment>)}
+                    </Panel>
+                </Fragment>;
+              })}
             </PanelGroup>
           </div>
           <div className="statusbar">
