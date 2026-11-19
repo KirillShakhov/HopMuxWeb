@@ -41,6 +41,10 @@ export function SettingsView({ settings, setSettings }: Props) {
           <label>Размер шрифта<input type="number" min="10" max="24" value={settings.fontSize} onChange={event => update('fontSize', Number(event.target.value))}/></label>
           <label>Строк в истории<input type="number" min="100" max="50000" value={settings.scrollback} onChange={event => update('scrollback', Number(event.target.value))}/></label>
         </div>
+        <label className="settings-check">
+          <input type="checkbox" checked={settings.hideUnpinnedHostKeyWarnings} onChange={event => update('hideUnpinnedHostKeyWarnings', event.target.checked)}/>
+          Скрывать предупреждения об отсутствии закреплённого отпечатка SSH
+        </label>
       </section>
       <section className="card settings-card">
         <h2><Monitor size={18}/> Рабочее место и передачи</h2>

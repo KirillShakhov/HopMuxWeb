@@ -41,6 +41,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
   const [activeRoute, setActiveRoute] = useState(session?.active_route || session?.route || '');
   const [warnings, setWarnings] = useState<HostKeyWarning[]>(session?.warnings || []);
   const [savingKey, setSavingKey] = useState(false);
+  const visibleWarnings = settings.hideUnpinnedHostKeyWarnings ? warnings.filter(warning => warning.kind !== 'unpinned') : warnings;
   const colors = terminalColors[settings.terminalTheme === 'follow' ? settings.theme : settings.terminalTheme];
 
   useEffect(() => {
@@ -148,7 +149,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
         <button title="Завершить SSH-процесс" aria-label="Завершить" onClick={() => onTerminate(sessionId)}><Square size={15}/></button>
       </div>
     </div>
-    {warnings.map(warning => <div className={'trust-warning' + (warning.kind === 'unpinned' ? '' : ' mismatch')} role="alert" key={warning.id || warning.node}>
+    {visibleWarnings.map(warning => <div className={'trust-warning' + (warning.kind === 'unpinned' ? '' : ' mismatch')} role="alert" key={warning.id || warning.node}>
       <AlertTriangle size={17}/>
       <div>
         <strong>{warning.kind === 'mismatch' ? 'Отпечаток SSH не совпадает' : warning.kind === 'rejected' ? 'Ключ SSH отклонён' : 'Ключ SSH не закреплён'} · {warning.node}</strong>

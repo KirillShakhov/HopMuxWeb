@@ -94,6 +94,7 @@ export type UiSettings = {
   fontSize: number;
   scrollback: number;
   terminalTheme: 'follow' | 'dark' | 'light';
+  hideUnpinnedHostKeyWarnings: boolean;
   restoreTabs: boolean;
   confirmClose: boolean;
   confirmTransfer: boolean;
@@ -107,6 +108,7 @@ export const defaultSettings: UiSettings = {
   fontSize: 14,
   scrollback: 5000,
   terminalTheme: 'follow',
+  hideUnpinnedHostKeyWarnings: false,
   restoreTabs: true,
   confirmClose: true,
   confirmTransfer: true,
