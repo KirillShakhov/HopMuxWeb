@@ -573,6 +573,7 @@ class TerminalSession:
         self.clients: set[WebSocket] = set()
         self.writer: WebSocket | None = None
         self.history = deque(maxlen=512)
+        self.output_lock = asyncio.Lock()
         self.stderr_task = None
         self.reader_task = None
 
@@ -591,12 +592,13 @@ class TerminalSession:
         await self.broadcast({"type": "state", **self.summary()})
 
     async def emit_output(self, data: bytes):
-        self.history.append(data)
-        for client in list(self.clients):
-            try:
-                await client.send_bytes(data)
-            except Exception:
-                self.clients.discard(client)
+        async with self.output_lock:
+            self.history.append(data)
+            for client in list(self.clients):
+                try:
+                    await client.send_bytes(data)
+                except Exception:
+                    self.clients.discard(client)
 
     async def start(self, access: VaultAccess | None = None):
         master, slave = pty.openpty()
@@ -839,13 +841,15 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
         await websocket.close(code=1008)
         return
     await websocket.accept()
-    session.clients.add(websocket)
-    if session.writer is None:
-        session.writer = websocket
-    await websocket.send_json({"type": "state", **session.summary(), "writer": session.writer is websocket})
-    for chunk in session.history:
-        await websocket.send_bytes(chunk)
     try:
+        async with session.output_lock:
+            session.clients.add(websocket)
+            if session.writer is None:
+                session.writer = websocket
+            await websocket.send_json({"type": "state", **session.summary(), "writer": session.writer is websocket})
+            for chunk in list(session.history):
+                await websocket.send_bytes(chunk)
+            await websocket.send_json({"type": "history_end"})
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":

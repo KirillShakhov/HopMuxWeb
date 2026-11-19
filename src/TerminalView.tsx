@@ -34,7 +34,6 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
   const root = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const writerRef = useRef(false);
   const [writer, setWriter] = useState(false);
   const [state, setState] = useState(session?.state || 'connecting');
   const [error, setError] = useState(session?.error || '');
@@ -69,6 +68,14 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
     const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/terminal/${sessionId}`);
     socketRef.current = socket;
     socket.binaryType = 'arraybuffer';
+    let ownsInput = false;
+    let replayingHistory = true;
+    const syncInput = () => {
+      const canWrite = ownsInput && !replayingHistory;
+      terminal.options.disableStdin = !canWrite;
+      setWriter(canWrite);
+    };
+    syncInput();
     const resize = () => {
       fit.fit();
       if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
@@ -86,27 +93,36 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
         setActiveRoute(message.active_route || message.route || '');
         if (message.warnings) setWarnings(message.warnings);
         if (typeof message.writer === 'boolean') {
-          writerRef.current = message.writer;
-          setWriter(message.writer);
-          terminal.options.disableStdin = !message.writer;
+          ownsInput = message.writer;
+          syncInput();
         }
       } else if (message.type === 'writer') {
-        writerRef.current = !!message.writer;
-        setWriter(!!message.writer);
-        terminal.options.disableStdin = !message.writer;
+        ownsInput = !!message.writer;
+        syncInput();
+      } else if (message.type === 'history_end') {
+        // The socket marker can arrive while xterm is still parsing the replay.
+        terminal.write(new Uint8Array(0), () => {
+          replayingHistory = false;
+          syncInput();
+        });
       } else if (message.type === 'host_keys') {
         setWarnings(message.warnings);
       }
     };
-    socket.onclose = () => setState(previous => previous === 'error' || previous === 'exited' ? previous : 'disconnected');
+    socket.onclose = () => {
+      ownsInput = false;
+      syncInput();
+      setState(previous => previous === 'error' || previous === 'exited' ? previous : 'disconnected');
+    };
     const input = terminal.onData(data => {
-      if (writerRef.current && socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data));
+      if (ownsInput && !replayingHistory && socket.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data));
     });
     const observer = new ResizeObserver(resize);
     observer.observe(root.current);
     return () => {
       observer.disconnect();
       input.dispose();
+      socket.onopen = socket.onmessage = socket.onclose = null;
       socket.close();
       socketRef.current = null;
       terminal.dispose();
