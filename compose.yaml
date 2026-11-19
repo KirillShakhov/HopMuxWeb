@@ -1,13 +1,14 @@
 services:
   hopmuxweb:
     build: .
-    ports:
-      - "127.0.0.1:8080:8000"
+    network_mode: host
     environment:
       HOPMUX_TOKEN: ${HOPMUX_TOKEN:?Set a strong HOPMUX_TOKEN in .env}
+      HOPMUX_BIND: 127.0.0.1
+      HOPMUX_PORT: 4444
       HOPMUX_VAULT_FILE: ${HOPMUX_VAULT_FILE:-}
     volumes:
-      - ./config:/config
+      - ~/.config/mssh:/config
       - ${SSH_DIR:-${HOME}/.ssh}:/home/hopmux/.ssh:ro
       - ./files:/files
       - hopmux-data:/data
