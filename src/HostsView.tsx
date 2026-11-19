@@ -6,25 +6,27 @@ import { useVault } from './VaultView';
 type Props = {
   model: Model | null;
   sessions: Session[];
-  initialHost: string;
+  selectedHost: string;
+  onSelectHost: (host: string) => void;
   openTerminal: (target: string, route: string) => void;
   openTransfer: (target: string, route: string) => void;
   onEdit: (target?: string) => void;
   onError: (error: unknown) => void;
 };
 
-export function HostsView({ model, sessions, initialHost, openTerminal, openTransfer, onEdit, onError }: Props) {
+export function HostsView({ model, sessions, selectedHost, onSelectHost, openTerminal, openTransfer, onEdit, onError }: Props) {
   const { request: vaultRequest } = useVault();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'favorites' | 'recent'>('all');
   const [favorites, setFavorites] = useState<string[]>(() => stored('hopmux-favorites', []));
   const [recent, setRecent] = useState<string[]>(() => stored('hopmux-recent', []));
-  const [selected, setSelected] = useState(() => initialHost || Object.keys(model?.nodes || {}).sort()[0] || '');
+  const selected = selectedHost || Object.keys(model?.nodes || {}).sort()[0] || '';
   const [selectedRoute, setSelectedRoute] = useState('');
   const [probe, setProbe] = useState<Record<string, 'checking' | 'up' | 'down' | 'error'>>({});
 
   useEffect(() => { localStorage.setItem('hopmux-favorites', JSON.stringify(favorites)); }, [favorites]);
   useEffect(() => { localStorage.setItem('hopmux-recent', JSON.stringify(recent)); }, [recent]);
+  useEffect(() => { setSelectedRoute(''); }, [selected]);
 
   const hosts = useMemo(() => Object.entries(model?.nodes || {})
     .filter(([name, host]) => (name + host.host + host.user).toLowerCase().includes(query.toLowerCase()))
@@ -37,10 +39,6 @@ export function HostsView({ model, sessions, initialHost, openTerminal, openTran
   const activeSession = sessions.find(session => session.target === selected && ['connected', 'connecting', 'verifying_host_key'].includes(session.state));
   const chosenRoute = routes.find(route => route.name === selectedRoute);
 
-  const chooseHost = (name: string) => {
-    setSelected(name);
-    setSelectedRoute('');
-  };
   const remember = () => {
     setRecent(previous => [selected, ...previous.filter(name => name !== selected)].slice(0, 12));
   };
@@ -67,7 +65,7 @@ export function HostsView({ model, sessions, initialHost, openTerminal, openTran
         {hosts.map(([name, item]) => {
           const live = sessions.find(session => session.target === name && ['connected', 'connecting', 'verifying_host_key'].includes(session.state));
           return <div key={name} className={'host-row ' + (selected === name ? 'chosen' : '')}>
-            <button className="host-row-main" aria-pressed={selected === name} onClick={() => chooseHost(name)}>
+            <button className="host-row-main" aria-pressed={selected === name} onClick={() => { setSelectedRoute(''); onSelectHost(name); }}>
               <span className="host-avatar"><HardDrive size={17}/></span>
               <span className="host-main"><strong>{name}</strong><small>{item.user}@{item.host}:{item.port || 22}</small></span>
               {live && <span className={'state-pill ' + live.state}>{stateLabel[live.state]}</span>}

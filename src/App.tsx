@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { Link, matchPath, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, LockKeyhole, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
 import { api, defaultSettings, initialLayout, json, stored, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
 import { TerminalView } from './TerminalView';
@@ -9,22 +10,27 @@ import { TransferView } from './TransferView';
 import { SettingsView } from './SettingsView';
 import { useVault, VaultView } from './VaultView';
 
-type Section = 'workspace' | 'hosts' | 'config' | 'vault' | 'settings';
 const navItems = [
-  ['workspace', LayoutGrid, 'Рабочее место'],
-  ['hosts', HardDrive, 'Хосты'],
-  ['config', GitBranch, 'Конфигурация'],
-  ['vault', LockKeyhole, 'Хранилище'],
-  ['settings', Settings2, 'Настройки'],
+  ['/', LayoutGrid, 'Рабочее место'],
+  ['/hosts', HardDrive, 'Хосты'],
+  ['/config', GitBranch, 'Конфигурация'],
+  ['/vault', LockKeyhole, 'Хранилище'],
+  ['/settings', Settings2, 'Настройки'],
 ] as const;
 
 export function App() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const currentSection = navItems.find(([path]) => matchPath(path, pathname));
+  const section = currentSection?.[0];
+  const hostToView = params.get('host') ?? '';
+  const focusHost = params.get('host') ?? undefined;
+  const singleSession = section === '/' ? params.get('session') : null;
+  const singleTransfer = section === '/' ? params.get('transfer') : null;
   const { refresh: refreshVault, request: vaultRequest } = useVault();
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [token, setToken] = useState('');
-  const [section, setSection] = useState<Section>('workspace');
-  const [hostToView, setHostToView] = useState('');
-  const [focusHost, setFocusHost] = useState<string>();
   const [model, setModel] = useState<Model | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -32,8 +38,6 @@ export function App() {
   const [tabs, setTabs] = useState<Tab[]>(() => stored<UiSettings>('hopmux-settings', defaultSettings).restoreTabs ? stored('hopmux-tabs', []) : []);
   const [layout, setLayout] = useState<Layout>(() => stored<UiSettings>('hopmux-settings', defaultSettings).restoreTabs ? { ...initialLayout, ...stored('hopmux-layout', initialLayout) } : initialLayout);
   const [notice, setNotice] = useState('');
-  const [singleSession, setSingleSession] = useState(new URLSearchParams(location.search).get('session'));
-  const [singleTransfer, setSingleTransfer] = useState(new URLSearchParams(location.search).get('transfer'));
   const showError = (error: unknown) => {
     if (!(error instanceof DOMException && error.name === 'AbortError')) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -76,7 +80,7 @@ export function App() {
       panels[0].push(tab.id);
       return { ...previous, panels, active: { ...previous.active, 0: tab.id } };
     });
-    setSection('workspace');
+    if (section !== '/') navigate('/');
   };
   const openTerminal = async (target: string, route: string) => {
     try {
@@ -119,13 +123,15 @@ export function App() {
     if (!confirm('Завершить SSH-процесс? Это прервёт удалённую shell-сессию.')) return;
     try { await api('/sessions/' + id, { method: 'DELETE' }); setSessions(await api('/sessions')); } catch (error) { showError(error); }
   };
-  const editConfig = (host = '') => { setFocusHost(host); setSection('config'); };
-  const browseHosts = (host = '') => { setHostToView(host); setSection('hosts'); };
-  const leaveSingle = () => { setSingleSession(null); setSingleTransfer(null); history.replaceState(null, '', '/'); setSection('workspace'); };
+  const editConfig = (host = '', replace = false) =>
+    navigate({ pathname: '/config', search: new URLSearchParams({ host }).toString() }, { replace });
+  const browseHosts = (host = '') =>
+    navigate({ pathname: '/hosts', search: host ? new URLSearchParams({ host }).toString() : '' });
+  const leaveSingle = () => navigate('/', { replace: true });
 
   if (authorized === null) return <div className="loading">Загрузка HopMuxWeb…</div>;
   if (!authorized) return <div className="login"><div className="login-card"><div className="brand-mark"><GitBranch size={25}/></div><h1>HopMuxWeb</h1><p>Ваше рабочее место для SSH</p><form onSubmit={async event => { event.preventDefault(); try { await api('/login', json('POST', { token })); setAuthorized(true); } catch (error) { showError(error); } }}><label htmlFor="access-token">Токен доступа</label><input id="access-token" type="password" value={token} onChange={event => setToken(event.target.value)} autoFocus placeholder="Введите HOPMUX_TOKEN"/><button className="primary" type="submit">Войти</button></form>{notice && <div className="error-box">{notice}</div>}</div></div>;
-  if (singleSession) return <div className="single-terminal"><div className="single-head"><span className="brand-mark small"><GitBranch size={17}/></span><strong>HopMuxWeb</strong><span>Отдельное окно терминала</span><button onClick={leaveSingle}>Рабочее место</button></div><TerminalView sessionId={singleSession} session={sessions.find(item => item.id === singleSession)} settings={settings} onTerminate={terminate} onDetach={leaveSingle} onEditConfig={() => { leaveSingle(); editConfig(sessions.find(item => item.id === singleSession)?.target); }} onConfigSaved={setModel} onError={showError}/></div>;
+  if (singleSession) return <div className="single-terminal"><div className="single-head"><span className="brand-mark small"><GitBranch size={17}/></span><strong>HopMuxWeb</strong><span>Отдельное окно терминала</span><button onClick={leaveSingle}>Рабочее место</button></div><TerminalView key={singleSession} sessionId={singleSession} session={sessions.find(item => item.id === singleSession)} settings={settings} onTerminate={terminate} onDetach={leaveSingle} onEditConfig={() => editConfig(sessions.find(item => item.id === singleSession)?.target, true)} onConfigSaved={setModel} onError={showError}/></div>;
   if (singleTransfer) return <div className="single-terminal"><div className="single-head"><span className="brand-mark small"><GitBranch size={17}/></span><strong>HopMuxWeb</strong><span>Отдельное окно передачи</span><button onClick={leaveSingle}>Рабочее место</button></div><TransferView model={model} transfers={transfers} settings={settings} focusedId={singleTransfer} separate onRefresh={reloadTransfers} onError={showError}/></div>;
 
   const ThemeIcon = settings.theme === 'dark' ? Moon : settings.theme === 'pickme' ? Sparkles : Sun;
@@ -145,19 +151,13 @@ export function App() {
         <strong>HopMux<span>Web</span></strong>
       </div>
       <nav aria-label="Основные разделы">
-        {navItems.map(([key, Icon, label]) => <button
-          key={key}
-          className={section === key ? 'nav active' : 'nav'}
-          aria-current={section === key ? 'page' : undefined}
+        {navItems.map(([path, Icon, label]) => <Link
+          key={path}
+          to={path}
+          className={section === path ? 'nav active' : 'nav'}
+          aria-current={section === path ? 'page' : undefined}
           title={label}
-          onClick={() => {
-            if (key === 'hosts') browseHosts();
-            else {
-              if (key === 'config') setFocusHost(undefined);
-              setSection(key);
-            }
-          }}
-        ><Icon size={18}/><span>{label}</span></button>)}
+        ><Icon size={18}/><span>{label}</span></Link>)}
       </nav>
       <div className="sidebar-bottom">
         <span className={'connection-dot' + (model ? ' online' : '')}/>
@@ -167,7 +167,7 @@ export function App() {
 
     <main className="main">
       <header className="topbar">
-        <div className="breadcrumb"><span>HopMuxWeb</span><span aria-hidden="true">/</span><strong>{navItems.find(([key]) => key === section)?.[2]}</strong></div>
+        <div className="breadcrumb"><span>HopMuxWeb</span><span aria-hidden="true">/</span><strong>{currentSection?.[2] ?? 'Страница не найдена'}</strong></div>
         <div className="top-actions">
           <button className="icon-button" title="Обновить данные" aria-label="Обновить данные" onClick={() => reload().catch(showError)}><RefreshCw size={17}/></button>
           <div className="theme-select">
@@ -181,7 +181,7 @@ export function App() {
       </header>
       {notice && <div className="toast" role="alert"><AlertCircle size={17}/><span>{notice}</span><button className="icon-button" aria-label="Закрыть уведомление" onClick={() => setNotice('')}><X size={16}/></button></div>}
 
-      {section === 'workspace' && <div className="page workspace">
+      {section === '/' && <div className="page workspace">
         <div className="page-title">
           <div><h1>Рабочее место</h1><p>SSH-сессии и передача файлов</p></div>
           <div className="title-actions">
@@ -257,10 +257,11 @@ export function App() {
           </div>
         </div>
       </div>}
-      {section === 'hosts' && <HostsView model={model} sessions={sessions} initialHost={hostToView} openTerminal={openTerminal} openTransfer={openTransfer} onEdit={editConfig} onError={showError}/>}
-      {section === 'config' && <ConfigView model={model} theme={settings.theme} focusHost={focusHost} onSaved={setModel} openTerminal={openTerminal} openTransfer={openTransfer} onError={showError}/>}
-      {section === 'vault' && <VaultView model={model} onError={showError}/>}
-      {section === 'settings' && <SettingsView settings={settings} setSettings={setSettings}/>}
+      {section === '/hosts' && <HostsView model={model} sessions={sessions} selectedHost={hostToView} onSelectHost={browseHosts} openTerminal={openTerminal} openTransfer={openTransfer} onEdit={editConfig} onError={showError}/>}
+      {section === '/config' && <ConfigView model={model} theme={settings.theme} focusHost={focusHost} onSaved={setModel} openTerminal={openTerminal} openTransfer={openTransfer} onError={showError}/>}
+      {section === '/vault' && <VaultView model={model} onError={showError}/>}
+      {section === '/settings' && <SettingsView settings={settings} setSettings={setSettings}/>}
+      {!section && <div className="page"><div className="page-title"><h1>Страница не найдена</h1></div><Link to="/" replace>Вернуться на рабочее место</Link></div>}
     </main>
   </div>;
 }
