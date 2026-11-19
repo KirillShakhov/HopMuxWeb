@@ -69,16 +69,42 @@ export const sessionLabel = (session: Session) => {
   return `${route} · ${started}`;
 };
 
+export type FileEndpoint = { host: string; route: string; path: string };
+
+export type TransferDraft = {
+  source: FileEndpoint;
+  destination: FileEndpoint;
+  recursive: boolean;
+  verify: boolean;
+};
+
 export type Transfer = {
   id: string;
+  state: string;
+  logs: string[];
+} & (TransferDraft | {
+  source?: undefined;
   target: string;
   route: string;
   direction: 'upload' | 'download';
   local: string;
   remote: string;
-  state: string;
-  logs: string[];
-};
+});
+
+export function transferDraft(item: Transfer): TransferDraft {
+  if (item.source) {
+    const { source, destination, recursive, verify } = item;
+    return { source, destination, recursive, verify };
+  }
+  const local = { host: '', route: '', path: item.local };
+  const remote = { host: item.target, route: item.route, path: item.remote };
+  return {
+    source: item.direction === 'upload' ? local : remote,
+    destination: item.direction === 'upload' ? remote : local,
+    recursive: false,
+    verify: false,
+  };
+}
 
 export type Tab = {
   id: string;

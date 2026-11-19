@@ -324,14 +324,37 @@ code, pre { font-family: var(--mono); }
 .terminal-error { background: var(--bad-surface); color: var(--bad); overflow-wrap: anywhere; }
 
 .transfer-scroll { overflow: auto; flex: 1; }
-.transfer-form { max-width: 800px; padding: 18px 20px; }
 .segmented { display: inline-flex; flex-wrap: wrap; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-muted); }
 .segmented button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 650; }
 .segmented button:hover { background: var(--hover); }
 .segmented button.on { background: var(--accent-surface); color: var(--accent-text); }
+.file-manager { padding: 14px; }
+.file-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.file-pane { display: flex; flex-direction: column; min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.file-pane-controls { display: grid; gap: 8px; padding: 9px; border-bottom: 1px solid var(--line); background: var(--surface-muted); }
+.file-pane-location { display: flex; gap: 8px; }
+.file-pane-location label { display: grid; flex: 1; min-width: 0; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.file-pane-location select, .file-pane-address input { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--line-control); border-radius: var(--control-radius); background: var(--surface); color: var(--ink); font: inherit; }
+.file-pane-address { display: flex; gap: 4px; align-items: center; }
+.file-pane-address input { flex: 1; font-family: var(--mono); font-size: 12px; }
+.file-entries { flex: 1; min-height: 145px; max-height: min(36vh, 350px); overflow: auto; }
+.file-entry { display: flex; border-bottom: 1px solid var(--line); }
+.file-entry:hover { background: var(--hover); }
+.file-entry.selected { background: var(--accent-surface); color: var(--accent-text); }
+.file-entry > button:first-child { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 7px 9px; border: 0; background: transparent; color: inherit; text-align: left; }
+.file-entry > button:first-child span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-entry small { flex: none; font-size: 11px; }
+.file-pane-status, .file-pane-error { padding: 9px; font-size: 12px; overflow-wrap: anywhere; }
+.file-pane-error { color: var(--bad); }
+.file-pane-tools, .file-copy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.file-pane-tools { padding: 7px; border-top: 1px solid var(--line); }
+.file-pane-tools .upload-button:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file-pane-tools input[type='file'] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.file-copy-actions { margin-top: 9px; }
+.file-copy-form { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-muted); }
+.file-copy-form .form-grid { margin-top: 0; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; margin-top: 16px; }
 .form-grid label, .settings-card label { display: grid; gap: 5px; min-width: 0; }
-.transfer-explainer { margin-top: 12px; font-size: 12px; }
 .transfer-options { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 13px; color: var(--muted); font-size: 12px; }
 .transfer-options label, .checkbox-row { display: flex; align-items: center; gap: 6px; }
 .form-actions { margin-top: 16px; }
@@ -341,10 +364,10 @@ code, pre { font-family: var(--mono); }
 .transfer-history h3 span { color: var(--muted); font-weight: 500; }
 .transfer-item { display: flex; align-items: center; gap: 9px; min-height: 44px; border-top: 1px solid var(--line); padding: 7px 4px; cursor: pointer; }
 .transfer-item:hover, .transfer-item.chosen { background: var(--surface-muted); }
-.transfer-icon { color: var(--accent-text); }
-.transfer-info { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.transfer-info { display: flex; flex: 1; flex-direction: column; align-items: stretch; min-width: 0; text-align: left; }
 .transfer-info strong, .transfer-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .transfer-item button { border: 0; background: transparent; color: var(--muted); }
+.transfer-item .transfer-info strong { color: var(--ink); }
 .transfer-detail { padding: 11px; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-muted); color: var(--muted); font-size: 12px; }
 .transfer-detail div { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; color: var(--ink); }
 .transfer-detail pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -401,6 +424,7 @@ code, pre { font-family: var(--mono); }
 [data-density='compact'] .host-avatar.large { width: 41px; height: 41px; }
 
 @container (max-width: 520px) {
+  .file-panels { grid-template-columns: minmax(0, 1fr); }
   .empty-content { flex-direction: column; align-items: stretch; gap: 18px; max-width: 335px; }
   .quick-hosts { width: 100%; }
   .terminal-foot span:nth-child(2), .tool-identity .route-label { display: none; }

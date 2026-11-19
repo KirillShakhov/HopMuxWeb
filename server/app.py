@@ -386,9 +386,13 @@ async def health():
     return {"ok": True, "cli": CLI, "config_exists": CONFIG.exists()}
 
 
+def selected_routes(model, target: str, route: str = ""):
+    return [item for item in model["routes"]
+            if item["target"] == target and not item.get("disabled") and (not route or item["name"] == route)]
+
+
 def vault_access(request: Request, model, target: str, route: str = ""):
-    selected = [item for item in model["routes"]
-                if item["target"] == target and not item.get("disabled") and (not route or item["name"] == route)]
+    selected = selected_routes(model, target, route)
     entries = [
         {name for hop in item["hops"] if (name := model["nodes"].get(hop, {}).get("password_vault"))}
         for item in selected
@@ -508,7 +512,7 @@ async def probe(target: str, request: Request):
 
 
 def local_path(relative: str, must_exist: bool = False) -> Path:
-    if not relative or Path(relative).is_absolute():
+    if not isinstance(relative, str) or not relative or "\0" in relative or Path(relative).is_absolute():
         error("Используйте относительный путь внутри /files")
     root = FILES.resolve()
     path = (root / relative).resolve()
@@ -522,21 +526,52 @@ async def files(path: str = "."):
     directory = local_path(path, True)
     if not directory.is_dir():
         error("Это не директория")
-    return {"path": path, "entries": [{"name": p.name, "directory": p.is_dir(), "size": p.stat().st_size if p.is_file() else None} for p in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())) if not p.is_symlink()]}
+    return {"path": directory.relative_to(FILES.resolve()).as_posix(), "entries": [{"name": p.name, "directory": p.is_dir(), "size": p.stat().st_size if p.is_file() else None} for p in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())) if not p.is_symlink()]}
+
+
+@app.get("/api/files/remote")
+async def remote_files(request: Request, host: str, route: str = "", path: str = "."):
+    if path != "." and (not path.startswith("/") or "\0" in path):
+        error("Укажите абсолютный путь к каталогу на хосте")
+    model = public_model(config_text())
+    if not selected_routes(model, host, route):
+        error("Неизвестный хост или маршрут")
+    access = vault_access(request, model, host, route)
+    args = ["--config", str(CONFIG)]
+    if route:
+        args += ["--route", route]
+    code, out, stderr = await cli_run(*args, "--", "ls", host, path, timeout=45, access=access)
+    if code:
+        error(stderr.strip().splitlines()[-1] if stderr.strip() else "Не удалось открыть удалённый каталог", 502)
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        error("mssh не вернул список файлов", 502)
 
 
 @app.post("/api/files/upload")
-async def browser_upload(file: UploadFile = File(...)):
+async def browser_upload(file: UploadFile = File(...), path: str = "."):
     safe_name = Path(file.filename or "").name
     if not safe_name or safe_name in (".", ".."):
         error("Неверное имя файла")
-    target = local_path(safe_name)
-    if target.exists():
+    directory = local_path(path, True)
+    if not directory.is_dir():
+        error("Это не директория")
+    target = local_path(str(directory.relative_to(FILES.resolve()) / safe_name))
+    try:
+        output = target.open("xb")
+    except FileExistsError:
         error("Файл уже существует", 409)
-    with target.open("xb") as output:
-        while data := await file.read(1024 * 1024):
-            output.write(data)
-    return {"path": safe_name}
+    except PermissionError:
+        error("Нет доступа к записи в каталог /files", 403)
+    try:
+        with output:
+            while data := await file.read(1024 * 1024):
+                output.write(data)
+    except (OSError, asyncio.CancelledError):
+        target.unlink(missing_ok=True)
+        raise
+    return {"path": target.relative_to(FILES.resolve()).as_posix()}
 
 
 @app.get("/api/files/download")
@@ -893,46 +928,105 @@ async def list_transfers():
     return [transfer_public(item) for item in transfers.values()]
 
 
+def transfer_endpoints(body):
+    if "source" in body or "destination" in body:
+        return body.get("source"), body.get("destination")
+    direction = body.get("direction")
+    if direction not in ("upload", "download"):
+        error("Укажите направление передачи")
+    local = {"host": "", "path": body.get("local")}
+    remote = {"host": body.get("target"), "route": body.get("route", ""), "path": body.get("remote")}
+    return (local, remote) if direction == "upload" else (remote, local)
+
+
+def validated_endpoint(raw, model, *, source):
+    if not isinstance(raw, dict):
+        error("Укажите источник и назначение")
+    host, route, path = raw.get("host", ""), raw.get("route", ""), raw.get("path")
+    if not isinstance(host, str) or not isinstance(route, str) or not isinstance(path, str) or not path or "\0" in path:
+        error("Укажите корректный путь, хост и маршрут")
+    if host:
+        if not path.startswith("/") or not selected_routes(model, host, route):
+            error("Укажите абсолютный удалённый путь и доступный маршрут")
+        if source and path.rstrip("/").split("/")[-1] in ("", ".", ".."):
+            error("Выберите файл или каталог как источник")
+        return {"host": host, "route": route, "path": path}, f"{host}:{path}"
+    local = local_path(path, source)
+    if source and (local == FILES.resolve() or not (local.is_file() or local.is_dir())):
+        error("Выберите файл или каталог внутри /files")
+    if not source and local.exists():
+        error("Локальный файл или каталог уже существует", 409)
+    return {"host": "", "route": "", "path": local.relative_to(FILES.resolve()).as_posix()}, str(local)
+
+
+def copy_routes(model, source, destination):
+    remotes = [end for end in (source, destination) if end["host"]]
+    if len(remotes) == 2 and source["host"] == destination["host"]:
+        if source["route"] and destination["route"] and source["route"] != destination["route"]:
+            error("Для копирования на одном хосте выберите один маршрут")
+        remotes = [{**source, "route": source["route"] or destination["route"]}]
+    names = []
+    if any(end["route"] for end in remotes):
+        names = list(dict.fromkeys(route["name"] for end in remotes
+                                  for route in selected_routes(model, end["host"], end["route"])))
+    return remotes, names
+
+
 @app.post("/api/transfers")
 async def create_transfer(request: Request):
     body = await request.json()
-    target, route = body.get("target", ""), body.get("route", "")
-    direction = body.get("direction")
-    remote = body.get("remote", "")
+    if not isinstance(body, dict):
+        error("Укажите источник и назначение")
     model = public_model(config_text())
-    if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target and not r.get("disabled") for r in model["routes"]):
-        error("Неизвестный хост или маршрут")
-    if direction not in ("upload", "download") or not isinstance(remote, str) or not remote.startswith("/") or ":" in remote:
-        error("Укажите направление и абсолютный удалённый путь")
-    local = local_path(body.get("local", ""), direction == "upload")
-    if direction == "download" and local.exists():
-        error("Локальный файл уже существует", 409)
-    if direction == "upload" and not local.is_file() and not local.is_dir():
-        error("Локальный источник не найден")
-    access = vault_access(request, model, target, route)
-    item = {"id": uuid.uuid4().hex, "target": target, "route": route, "direction": direction, "local": body["local"], "remote": remote, "state": "queued", "created": time.time(), "logs": deque(maxlen=100)}
-    transfers[item["id"]] = item
-    save_history()
-    asyncio.create_task(run_transfer(item, bool(body.get("recursive")), bool(body.get("verify")), access))
-    return transfer_public(item)
-
-
-async def run_transfer(item, recursive=False, verify=False, access: VaultAccess | None = None):
-    args = [CLI, "--config", str(CONFIG)]
-    if item["route"]:
-        args += ["--route", item["route"]]
+    from_raw, to_raw = transfer_endpoints(body)
+    source, from_arg = validated_endpoint(from_raw, model, source=True)
+    destination, to_arg = validated_endpoint(to_raw, model, source=False)
+    if not source["host"] and not destination["host"]:
+        error("Выберите SSH-хост хотя бы в одной панели")
+    if from_arg == to_arg:
+        error("Источник и назначение совпадают")
+    remote_copy = bool(source["host"] and destination["host"])
+    remotes, routes = copy_routes(model, source, destination)
+    accesses = [vault_access(request, model, end["host"], end["route"]) for end in remotes]
+    access = next((lease for lease in accesses if lease is not None), None)
+    recursive, verify = bool(body.get("recursive")), bool(body.get("verify"))
+    item = {"id": uuid.uuid4().hex, "source": source, "destination": destination, "recursive": recursive,
+            "verify": verify, "state": "queued", "created": time.time(), "logs": deque(maxlen=100)}
+    if not remote_copy:
+        local, remote = (source, destination) if destination["host"] else (destination, source)
+        item.update(target=remote["host"], route=remote["route"], remote=remote["path"], local=local["path"],
+                    direction="upload" if destination["host"] else "download")
+    args = ["--config", str(CONFIG)]
+    for route in routes:
+        args += ["--route", route]
     if recursive:
         args.append("-r")
     if verify:
         args.append("--verify")
-    args.append("--continue-partial")
-    local = str(local_path(item["local"], item["direction"] == "upload"))
-    remote = f'{item["target"]}:{item["remote"]}'
-    args += [local, remote] if item["direction"] == "upload" else [remote, local]
+    args += ["--max-routes", "1"] if remote_copy else ["--continue-partial"]
+    args += ["--", from_arg, to_arg]
+    transfers[item["id"]] = item
+    try:
+        save_history()
+    except OSError:
+        transfers.pop(item["id"], None)
+        error("Не удалось сохранить историю передач", 500)
+    asyncio.create_task(run_transfer(item, args, access))
+    return transfer_public(item)
+
+
+async def run_transfer(item, args, access: VaultAccess | None):
+    if item["state"] == "cancelled":
+        return
     item["state"] = "running"
     try:
-        process = await spawn_cli(args[0], args[1:], vault=access, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL)
+        process = await spawn_cli(CLI, args, vault=access, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL)
         transfer_processes[item["id"]] = process
+        if item["state"] == "cancelled" and process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
         while line := await process.stdout.readline():
             item["logs"].append(line.decode(errors="replace").rstrip())
         await process.wait()
@@ -941,8 +1035,9 @@ async def run_transfer(item, recursive=False, verify=False, access: VaultAccess 
             if process.returncode:
                 item["logs"].append(f"CLI завершился с кодом {process.returncode}")
     except Exception as exc:
-        item["state"] = "error"
-        item["logs"].append(str(exc))
+        if item["state"] != "cancelled":
+            item["state"] = "error"
+            item["logs"].append(str(exc))
     finally:
         transfer_processes.pop(item["id"], None)
         save_history()
@@ -953,10 +1048,15 @@ async def cancel_transfer(transfer_id: str):
     item = transfers.get(transfer_id)
     if not item:
         error("Передача не найдена", 404)
+    if item["state"] not in ("queued", "running"):
+        return transfer_public(item)
+    item["state"] = "cancelled"
     process = transfer_processes.get(transfer_id)
     if process and process.returncode is None:
-        process.terminate()
-    item["state"] = "cancelled"
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
     save_history()
     return transfer_public(item)
 

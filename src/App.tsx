@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Link, matchPath, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, LockKeyhole, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
-import { ApiError, api, defaultSettings, initialLayout, isResumableSession, json, sessionLabel, stored, terminalWindowUrl, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
+import { ApiError, api, defaultSettings, initialLayout, isResumableSession, json, sessionLabel, stored, terminalWindowUrl, themes, transferDraft, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
 import { TerminalView } from './TerminalView';
 import { HostsView } from './HostsView';
 import { ConfigView } from './ConfigView';
@@ -191,7 +191,12 @@ export function App() {
   const closeTab = async (id: string) => {
     const tab = tabs.find(item => item.id === id);
     if (tab?.kind === 'terminal' && tab.sessionId && !await terminate(tab.sessionId)) return;
-    const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => item.state === 'running' && (tab.transferId ? item.id === tab.transferId : item.target === tab.target));
+    const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => {
+      if (item.state !== 'queued' && item.state !== 'running') return false;
+      if (tab.transferId) return item.id === tab.transferId;
+      const { source, destination } = transferDraft(item);
+      return Boolean(tab.target && (source.host === tab.target || destination.host === tab.target));
+    });
     if (activeTransfer && settings.confirmClose && !confirm('Передача ещё выполняется. Закрыть представление? Задача продолжится на сервере.')) return;
     removeTab(id);
   };
