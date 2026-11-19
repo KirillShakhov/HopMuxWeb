@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Link, matchPath, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, LockKeyhole, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
-import { ApiError, api, defaultSettings, initialLayout, isResumableSession, json, sessionLabel, stored, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
+import { ApiError, api, defaultSettings, initialLayout, isResumableSession, json, sessionLabel, stored, terminalWindowUrl, themes, type Layout, type Model, type Session, type Tab, type Theme, type Transfer, type UiSettings } from './lib';
 import { TerminalView } from './TerminalView';
 import { HostsView } from './HostsView';
 import { ConfigView } from './ConfigView';
@@ -34,6 +34,7 @@ export function App() {
   const [model, setModel] = useState<Model | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const sessionListVersion = useRef(0);
+  const sessionActions = useRef(new Set<string>());
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [settings, setSettings] = useState<UiSettings>(() => ({ ...defaultSettings, ...stored('hopmux-settings', {}) }));
   const [tabs, setTabs] = useState<Tab[]>(() => stored<UiSettings>('hopmux-settings', defaultSettings).restoreTabs ? stored('hopmux-tabs', []) : []);
@@ -51,6 +52,12 @@ export function App() {
   };
   const reload = () => Promise.all([api<Model>('/config').then(setModel), reloadSessions(), api<Transfer[]>('/transfers').then(setTransfers)]);
   const reloadTransfers = () => api<Transfer[]>('/transfers').then(setTransfers).catch(showError);
+  const rememberSession = (session: Session, previousId = session.id) => {
+    sessionListVersion.current++;
+    setSessions(previous => [...previous.filter(item => item.id !== previousId && item.id !== session.id), session]);
+  };
+  const createTerminalSession = (target: string, route: string) =>
+    vaultRequest(() => api<Session>('/sessions', json('POST', { target, route })));
 
   useEffect(() => { api<{ authenticated: boolean }>('/auth').then(result => setAuthorized(result.authenticated)).catch(() => setAuthorized(false)); }, []);
   useEffect(() => { if (authorized) reload().catch(showError); }, [authorized]);
@@ -102,11 +109,31 @@ export function App() {
   };
   const openTerminal = async (target: string, route: string, panelIndex = 0) => {
     try {
-      const session = await vaultRequest(() => api<Session>('/sessions', json('POST', { target, route })));
-      sessionListVersion.current++;
-      setSessions(previous => [...previous.filter(item => item.id !== session.id), session]);
+      const session = await createTerminalSession(target, route);
+      rememberSession(session);
       showTerminalSession(session, panelIndex);
     } catch (error) { showError(error); }
+  };
+  const reconnectTerminal = async (id: string, target?: string, route = '', separate = false) => {
+    if (sessionActions.current.has(id)) return;
+    sessionActions.current.add(id);
+    try {
+      try {
+        const session = await vaultRequest(() => api<Session>('/sessions/' + id + '/reconnect', { method: 'POST' }));
+        rememberSession(session);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404)) throw error;
+        if (!target) throw new Error('Сессия больше недоступна. Выберите хост на рабочем месте.');
+        const session = await createTerminalSession(target, route);
+        rememberSession(session, id);
+        setTabs(previous => previous.map(tab => tab.sessionId === id
+          ? { ...tab, sessionId: session.id, target: session.target, route: session.route }
+          : tab));
+        if (separate) navigate(terminalWindowUrl(session.id, session.target, session.route), { replace: true });
+      }
+    } finally {
+      sessionActions.current.delete(id);
+    }
   };
   const openTransfer = (target = '', route = '', panelIndex = 0) => openTab({ id: crypto.randomUUID(), kind: 'transfer', title: target ? `Файлы · ${target}` : 'Передача файлов', target, route }, panelIndex);
   const selectTab = (panelIndex: number, id: string) =>
@@ -138,11 +165,17 @@ export function App() {
     return { ...previous, panels, active, maximized: null };
   });
   const terminate = async (id: string) => {
-    if (!confirm('Завершить SSH-процесс? Это прервёт удалённую shell-сессию.')) return false;
+    if (sessionActions.current.has(id)) return false;
+    sessionActions.current.add(id);
     try {
-      const { session } = await api<{ session: Session }>('/sessions/' + id, { method: 'DELETE' });
-      sessionListVersion.current++;
-      setSessions(previous => previous.map(item => item.id === id ? session : item));
+      const current = await api<Session>('/sessions/' + id);
+      if (current.running) {
+        if (!confirm('Завершить SSH-процесс? Это прервёт удалённую shell-сессию.')) return false;
+        const { session } = await api<{ session: Session }>('/sessions/' + id, { method: 'DELETE' });
+        rememberSession(session);
+      } else {
+        rememberSession(current);
+      }
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 404)) {
         showError(error);
@@ -150,15 +183,14 @@ export function App() {
       }
       sessionListVersion.current++;
       setSessions(previous => previous.filter(item => item.id !== id));
+    } finally {
+      sessionActions.current.delete(id);
     }
     return true;
   };
   const closeTab = async (id: string) => {
     const tab = tabs.find(item => item.id === id);
-    if (tab?.kind === 'terminal' && tab.sessionId) {
-      const session = sessions.find(item => item.id === tab.sessionId);
-      if (session?.state !== 'exited' && session?.state !== 'error' && !await terminate(tab.sessionId)) return;
-    }
+    if (tab?.kind === 'terminal' && tab.sessionId && !await terminate(tab.sessionId)) return;
     const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => item.state === 'running' && (tab.transferId ? item.id === tab.transferId : item.target === tab.target));
     if (activeTransfer && settings.confirmClose && !confirm('Передача ещё выполняется. Закрыть представление? Задача продолжится на сервере.')) return;
     removeTab(id);
@@ -171,7 +203,16 @@ export function App() {
 
   if (authorized === null) return <div className="loading">Загрузка HopMuxWeb…</div>;
   if (!authorized) return <div className="login"><div className="login-card"><div className="brand-mark"><GitBranch size={25}/></div><h1>HopMuxWeb</h1><p>Ваше рабочее место для SSH</p><form onSubmit={async event => { event.preventDefault(); try { await api('/login', json('POST', { token })); setAuthorized(true); } catch (error) { showError(error); } }}><label htmlFor="access-token">Токен доступа</label><input id="access-token" type="password" value={token} onChange={event => setToken(event.target.value)} autoFocus placeholder="Введите HOPMUX_TOKEN"/><button className="primary" type="submit">Войти</button></form>{notice && <div className="error-box">{notice}</div>}</div></div>;
-  if (singleSession) return <div className="single-terminal"><div className="single-head"><span className="brand-mark small"><GitBranch size={17}/></span><strong>HopMuxWeb</strong><span>Отдельное окно терминала</span><button onClick={leaveSingle}>Рабочее место</button></div><TerminalView key={singleSession} sessionId={singleSession} session={sessions.find(item => item.id === singleSession)} settings={settings} onTerminate={terminate} onDetach={leaveSingle} onEditConfig={() => editConfig(sessions.find(item => item.id === singleSession)?.target, true)} onConfigSaved={setModel} onError={showError}/></div>;
+  if (singleSession) {
+    const session = sessions.find(item => item.id === singleSession);
+    const tab = tabs.find(item => item.sessionId === singleSession);
+    const target = session?.target || tab?.target || tab?.title || params.get('host') || undefined;
+    const route = session?.route ?? tab?.route ?? params.get('route') ?? '';
+    return <div className="single-terminal">
+      <div className="single-head"><span className="brand-mark small"><GitBranch size={17}/></span><strong>HopMuxWeb</strong><span>Отдельное окно терминала</span><button onClick={leaveSingle}>Рабочее место</button></div>
+      <TerminalView key={singleSession} sessionId={singleSession} session={session} target={target} route={route} settings={settings} onReconnect={id => reconnectTerminal(id, target, route, true)} onTerminate={terminate} onDetach={leaveSingle} onEditConfig={() => editConfig(target, true)} onConfigSaved={setModel} onError={showError}/>
+    </div>;
+  }
   if (singleTransfer) return <div className="single-terminal"><div className="single-head"><span className="brand-mark small"><GitBranch size={17}/></span><strong>HopMuxWeb</strong><span>Отдельное окно передачи</span><button onClick={leaveSingle}>Рабочее место</button></div><TransferView model={model} transfers={transfers} settings={settings} focusedId={singleTransfer} separate onRefresh={reloadTransfers} onError={showError}/></div>;
 
   const ThemeIcon = settings.theme === 'dark' ? Moon : settings.theme === 'pickme' ? Sparkles : Sun;
@@ -240,6 +281,7 @@ export function App() {
             <PanelGroup direction={layout.direction || 'horizontal'} className="panel-group">
               {layout.panels.map((panel, index) => {
                 const tab = tabs.find(item => item.id === layout.active[index] && panel.includes(item.id));
+                const terminalSession = tab?.sessionId ? sessions.find(item => item.id === tab.sessionId) : undefined;
                 return <Fragment key={index}>
                     {index > 0 && <PanelResizeHandle className={'resize-handle' + (layout.direction === 'vertical' ? ' vertical' : '') + (layout.maximized !== null ? ' hidden-panel' : '')}/>}
                     <Panel minSize={15} defaultSize={100 / layout.panels.length} className={layout.maximized !== null && layout.maximized !== index ? 'hidden-panel' : ''}>
@@ -265,7 +307,7 @@ export function App() {
 
                         {tab ? <div className="panel-content" key={tab.id}>
                           {tab.kind === 'terminal' && tab.sessionId
-                            ? <TerminalView sessionId={tab.sessionId} session={sessions.find(item => item.id === tab.sessionId)} settings={settings} onTerminate={terminate} onDetach={() => removeTab(tab.id)} onEditConfig={() => editConfig(tab.target)} onConfigSaved={setModel} onError={showError}/>
+                            ? <TerminalView key={tab.sessionId} sessionId={tab.sessionId} session={terminalSession} target={tab.target || tab.title} route={tab.route} settings={settings} onReconnect={id => reconnectTerminal(id, tab.target || tab.title, tab.route)} onTerminate={terminate} onDetach={() => removeTab(tab.id)} onEditConfig={() => editConfig(tab.target || tab.title)} onConfigSaved={setModel} onError={showError}/>
                             : <TransferView model={model} transfers={transfers} settings={settings} initialTarget={tab.target} initialRoute={tab.route} focusedId={tab.transferId} onCreated={transferId => setTabs(previous => previous.map(item => item.id === tab.id ? { ...item, transferId } : item))} onRefresh={reloadTransfers} onError={showError}/>}
                         </div> : <div className="empty-panel">
                           <div className="empty-content">

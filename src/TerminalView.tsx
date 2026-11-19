@@ -2,8 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AlertTriangle, ExternalLink, Minus, RefreshCw, Square, Terminal } from 'lucide-react';
-import { api, json, stateLabel, type HostKeyWarning, type Model, type Session, type Theme, type UiSettings } from './lib';
-import { useVault } from './VaultView';
+import { api, json, stateLabel, terminalWindowUrl, type HostKeyWarning, type Model, type Session, type Theme, type UiSettings } from './lib';
 
 const lightAnsi = {
   black: '#242638', red: '#a82936', green: '#087345', yellow: '#805900',
@@ -21,7 +20,10 @@ const terminalColors = {
 type Props = {
   sessionId: string;
   session?: Session;
+  target?: string;
+  route?: string;
   settings: UiSettings;
+  onReconnect: (id: string) => Promise<void>;
   onTerminate: (id: string) => void;
   onDetach: () => void;
   onEditConfig: () => void;
@@ -29,17 +31,18 @@ type Props = {
   onError: (error: unknown) => void;
 };
 
-export function TerminalView({ sessionId, session, settings, onTerminate, onDetach, onEditConfig, onConfigSaved, onError }: Props) {
-  const { request: vaultRequest } = useVault();
+export function TerminalView({ sessionId, session, target, route, settings, onReconnect, onTerminate, onDetach, onEditConfig, onConfigSaved, onError }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const [writer, setWriter] = useState(false);
   const [state, setState] = useState(session?.state || 'connecting');
   const [error, setError] = useState(session?.error || '');
-  const [activeRoute, setActiveRoute] = useState(session?.active_route || session?.route || '');
+  const [activeRoute, setActiveRoute] = useState(session?.active_route || session?.route || route || '');
   const [warnings, setWarnings] = useState<HostKeyWarning[]>(session?.warnings || []);
   const [savingKey, setSavingKey] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [socketAttempt, setSocketAttempt] = useState(0);
   const visibleWarnings = settings.hideUnpinnedHostKeyWarnings ? warnings.filter(warning => warning.kind !== 'unpinned') : warnings;
   const colors = terminalColors[settings.terminalTheme === 'follow' ? settings.theme : settings.terminalTheme];
 
@@ -128,13 +131,29 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [sessionId, settings.fontSize, settings.scrollback]);
+  }, [sessionId, settings.fontSize, settings.scrollback, socketAttempt]);
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = colors;
   }, [colors]);
 
-  const reconnect = () => vaultRequest(() => api('/sessions/' + sessionId + '/reconnect', { method: 'POST' }));
+  const reconnect = async () => {
+    await onReconnect(sessionId);
+    if (socketRef.current?.readyState === WebSocket.CLOSED) setSocketAttempt(previous => previous + 1);
+  };
+  const retryConnection = async () => {
+    setReconnecting(true);
+    setError('');
+    try {
+      await reconnect();
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setReconnecting(false);
+    }
+  };
   const saveHostKey = async (warning: HostKeyWarning) => {
     const { id, node, fingerprint, expected } = warning;
     if (!id || !fingerprint || savingKey) return;
@@ -153,16 +172,18 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
     <div className="tool-head terminal-head">
       <div className="tool-identity">
         <span className="tool-icon"><Terminal size={16}/></span>
-        <strong>{session?.target || 'Терминал'}</strong>
+        <strong>{session?.target || target || 'Терминал'}</strong>
         <span className="route-label">{activeRoute || 'Автоматический маршрут'}</span>
         <span className={'state-pill ' + state}>{stateLabel[state] || state}</span>
       </div>
       <div className="tool-actions">
-        {!writer && <button title="Взять управление вводом в этом окне" onClick={() => socketRef.current?.send(JSON.stringify({ type: 'claim' }))}>Взять ввод</button>}
-        <button title="Переподключить SSH" aria-label="Переподключить" disabled={savingKey} onClick={() => reconnect().catch(onError)}><RefreshCw size={16}/></button>
-        <button title="Открыть эту же сессию в новом окне" aria-label="В новое окно" onClick={() => window.open('/?session=' + sessionId, '_blank')}><ExternalLink size={16}/></button>
-        <button title="Отсоединиться: SSH-процесс продолжит работу" aria-label="Отсоединиться" onClick={onDetach}><Minus size={16}/></button>
-        <button title="Завершить SSH-процесс" aria-label="Завершить" onClick={() => onTerminate(sessionId)}><Square size={15}/></button>
+        {!writer && session?.running && <button title="Взять управление вводом в этом окне" onClick={() => {
+          if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: 'claim' }));
+        }}>Взять ввод</button>}
+        <button title="Переподключить SSH" aria-label="Переподключить" disabled={savingKey || reconnecting} onClick={retryConnection}><RefreshCw size={16}/></button>
+        <button title="Открыть эту же сессию в новом окне" aria-label="В новое окно" onClick={() => window.open(terminalWindowUrl(sessionId, session?.target || target, session?.route ?? route), '_blank')}><ExternalLink size={16}/></button>
+        <button title="Отсоединиться: SSH-процесс продолжит работу" aria-label="Отсоединиться" disabled={reconnecting} onClick={onDetach}><Minus size={16}/></button>
+        <button title="Завершить SSH-процесс" aria-label="Завершить" disabled={!session?.running || reconnecting} onClick={() => onTerminate(sessionId)}><Square size={15}/></button>
       </div>
     </div>
     {visibleWarnings.map(warning => <div className={'trust-warning' + (warning.kind === 'unpinned' ? '' : ' mismatch')} role="alert" key={warning.id || warning.node}>
@@ -175,7 +196,7 @@ export function TerminalView({ sessionId, session, settings, onTerminate, onDeta
           : <span>Отпечаток пока недоступен. Его можно указать вручную в конфигурации.</span>}
       </div>
       {warning.id && warning.fingerprint
-        ? <button className={warning.kind === 'mismatch' ? 'danger' : 'subtle'} disabled={savingKey} onClick={() => saveHostKey(warning)}>
+        ? <button className={warning.kind === 'mismatch' ? 'danger' : 'subtle'} disabled={savingKey || reconnecting} onClick={() => saveHostKey(warning)}>
           {warning.kind === 'mismatch' ? 'Заменить отпечаток' : 'Закрепить отпечаток'}
         </button>
         : <button className="text-action" onClick={onEditConfig}>Открыть конфиг</button>}

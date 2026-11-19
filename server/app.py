@@ -725,12 +725,21 @@ class TerminalSession:
             self.master = -1
 
     def summary(self):
-        return {"id": self.id, "target": self.target, "route": self.route, "active_route": self.active_route, "state": self.state, "error": self.error, "warnings": self.host_key_warnings(), "created": self.created}
+        running = self.process is not None and self.process.returncode is None
+        return {"id": self.id, "target": self.target, "route": self.route, "active_route": self.active_route, "state": self.state, "running": running, "error": self.error, "warnings": self.host_key_warnings(), "created": self.created}
 
 
 @app.get("/api/sessions")
 async def list_sessions():
     return [session.summary() for session in sessions.values()]
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    session = sessions.get(session_id)
+    if not session:
+        error("Сессия не найдена", 404)
+    return session.summary()
 
 
 @app.post("/api/sessions")

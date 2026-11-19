@@ -47,6 +47,7 @@ export type Session = {
   route: string;
   active_route?: string;
   state: string;
+  running: boolean;
   error: string;
   warnings?: HostKeyWarning[];
   created?: number;
@@ -54,6 +55,13 @@ export type Session = {
 
 export const isResumableSession = (session: Session) =>
   ['connected', 'connecting', 'verifying_host_key', 'disconnected'].includes(session.state);
+
+export const terminalWindowUrl = (sessionId: string, target?: string, route?: string) => {
+  const params = new URLSearchParams({ session: sessionId });
+  if (target) params.set('host', target);
+  if (route) params.set('route', route);
+  return `/?${params}`;
+};
 
 export const sessionLabel = (session: Session) => {
   const route = session.active_route || session.route || 'Автоматический маршрут';
