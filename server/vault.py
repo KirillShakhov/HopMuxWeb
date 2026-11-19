@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import hashlib
 import os
 import pty
@@ -247,7 +248,9 @@ class Vault:
                 Path(temporary).unlink(missing_ok=True)
         except FileExistsError:
             raise HTTPException(409, "Хранилище уже существует") from None
-        except OSError:
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+                raise HTTPException(500, "Нет доступа на запись в каталог хранилища mssh") from None
             raise HTTPException(500, "Не удалось записать хранилище mssh") from None
 
     async def unlock(self, password, *, create=False):

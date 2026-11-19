@@ -1,6 +1,10 @@
 services:
   hopmuxweb:
-    build: .
+    build:
+      context: .
+      args:
+        HOPMUX_UID: ${HOPMUX_UID:-10001}
+        HOPMUX_GID: ${HOPMUX_GID:-10001}
     network_mode: host
     environment:
       HOPMUX_TOKEN: ${HOPMUX_TOKEN:?Set a strong HOPMUX_TOKEN in .env}

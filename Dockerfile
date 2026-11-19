@@ -11,8 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && curl -fL --retry 3 "$MSSH_URL" -o /tmp/mssh \
  && echo "$MSSH_SHA256  /tmp/mssh" | sha256sum -c - \
  && install -m 0755 /tmp/mssh /usr/local/bin/mssh \
- && rm /tmp/mssh \
- && useradd -m -u 10001 -s /bin/sh hopmux \
+ && rm /tmp/mssh
+ARG HOPMUX_UID=10001
+ARG HOPMUX_GID=10001
+RUN groupadd -g "$HOPMUX_GID" hopmux \
+ && useradd -m -u "$HOPMUX_UID" -g hopmux -s /bin/sh hopmux \
  && mkdir -p /data /files /config && chown -R hopmux:hopmux /data /files /config
 WORKDIR /app
 COPY requirements.txt ./
