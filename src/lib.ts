@@ -113,6 +113,7 @@ export type Tab = {
   title: string;
   sessionId?: string;
   transferId?: string;
+  transferIds?: string[];
   target?: string;
   route?: string;
 };

@@ -314,7 +314,7 @@ function Workspace({ catalog, catalogError, workspaceCache, enabled, selectConfi
     if (tab?.kind === 'terminal' && tab.sessionId && !await terminate(tab.sessionId)) return;
     const activeTransfer = tab?.kind === 'transfer' && transfers.some(item => {
       if (item.state !== 'queued' && item.state !== 'running') return false;
-      if (tab.transferId) return item.id === tab.transferId;
+      if (tab.transferId) return item.id === tab.transferId || Boolean(tab.transferIds?.includes(item.id));
       const { source, destination } = transferDraft(item);
       return Boolean(tab.target && (source.host === tab.target || destination.host === tab.target));
     });
@@ -441,7 +441,13 @@ function Workspace({ catalog, catalogError, workspaceCache, enabled, selectConfi
                         {tab ? <div className="panel-content" key={tab.id}>
                           {tab.kind === 'terminal' && tab.sessionId
                             ? <TerminalView key={tab.sessionId} sessionId={tab.sessionId} session={terminalSession} target={tab.target || tab.title} route={tab.route} settings={settings} onReconnect={id => reconnectTerminal(id, tab.target || tab.title, tab.route)} onTerminate={terminate} onDetach={() => removeTab(tab.id)} onEditConfig={() => editConfig(tab.target || tab.title)} onConfigSaved={setModel} onError={showError}/>
-                            : <TransferView model={model} transfers={transfers} settings={settings} initialTarget={tab.target} initialRoute={tab.route} focusedId={tab.transferId} onCreated={transferId => setTabs(previous => previous.map(item => item.id === tab.id ? { ...item, transferId } : item))} onRefresh={reloadTransfers} onError={showError}/>}
+                            : <TransferView model={model} transfers={transfers} settings={settings} initialTarget={tab.target} initialRoute={tab.route} focusedId={tab.transferId} transferIds={tab.transferIds}
+                                onCreated={transferId => setTabs(previous => previous.map(item => item.id === tab.id ? {
+                                  ...item,
+                                  transferId,
+                                  transferIds: [...(item.transferIds ?? (item.transferId ? [item.transferId] : [])), transferId],
+                                } : item))}
+                                onRefresh={reloadTransfers} onError={showError}/>}
                         </div> : <div className="empty-panel">
                           <div className="empty-content">
                             <div className="empty-connect">

@@ -16,6 +16,8 @@
   --accent-line: #bac8ff;
   --good: #16734d;
   --good-surface: #e9f7ef;
+  --info: #2d49ad;
+  --info-surface: #edf1ff;
   --bad: #ab303a;
   --bad-surface: #fff0f1;
   --warn: #835503;
@@ -50,6 +52,8 @@
   --accent-line: #43558c;
   --good: #82dcb2;
   --good-surface: #193329;
+  --info: #c1ccff;
+  --info-surface: #232c49;
   --bad: #ffacb4;
   --bad-surface: #392127;
   --warn: #f0cb83;

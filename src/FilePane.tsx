@@ -16,7 +16,7 @@ export function useFilePane(initialHost = '', initialRoute = '', enabled = true)
   const { request } = useVault();
   const [location, setLocation] = useState<FileEndpoint>({ host: initialHost, route: initialRoute, path: '.' });
   const [directory, setDirectory] = useState<Directory>();
-  const [selection, setSelection] = useState('');
+  const [selection, setSelection] = useState<Set<string>>(() => new Set());
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(enabled);
   const [revision, setRevision] = useState(0);
@@ -36,7 +36,7 @@ export function useFilePane(initialHost = '', initialRoute = '', enabled = true)
       .then(result => {
         if (!controller.signal.aborted) {
           setDirectory(result);
-          setSelection(previous => result.entries.some(entry => entry.name === previous) ? previous : '');
+          setSelection(previous => new Set(result.entries.filter(entry => previous.has(entry.name)).map(entry => entry.name)));
         }
       })
       .catch(error => {
@@ -48,17 +48,24 @@ export function useFilePane(initialHost = '', initialRoute = '', enabled = true)
 
   const change = (next: FileEndpoint) => {
     setDirectory(undefined);
-    setSelection('');
+    setSelection(new Set());
     setLoading(true);
     setLocation(next);
     setRevision(previous => previous + 1);
   };
   const endpoint = { ...location, path: directory?.path ?? path };
   const refresh = useCallback(() => setRevision(previous => previous + 1), []);
+  const toggleSelection = (name: string) => setSelection(previous => {
+    const next = new Set(previous);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    return next;
+  });
 
   return {
     endpoint, change, directory, error, loading, selection, setSelection,
-    selected: directory?.entries.find(entry => entry.name === selection),
+    selected: directory?.entries.filter(entry => selection.has(entry.name)) ?? [],
+    toggleSelection,
     refresh,
   };
 }
@@ -72,6 +79,9 @@ type Props = {
 export function FilePane({ title, model, pane }: Props) {
   const { api } = useConfiguration();
   const { endpoint, directory, selected } = pane;
+  const entries = directory?.entries ?? [];
+  const allSelected = entries.length > 0 && selected.length === entries.length;
+  const download = selected.length === 1 && !selected[0].directory ? selected[0] : undefined;
   const { host, route, path } = endpoint;
   const routes = model?.routes.filter(item => item.target === host && !item.disabled) ?? [];
   const hosts = [...new Set(model?.routes.filter(item => !item.disabled).map(item => item.target))].sort();
@@ -124,12 +134,22 @@ export function FilePane({ title, model, pane }: Props) {
         <button type="button" className="icon-button" title="Обновить каталог" aria-label="Обновить каталог" disabled={pane.loading} onClick={pane.refresh}><RefreshCw size={15}/></button>
       </form>
     </div>
+    {entries.length > 0 && <div className="file-selection">
+      <label><input type="checkbox" checked={allSelected} ref={input => {
+        if (input) input.indeterminate = selected.length > 0 && !allSelected;
+      }} onChange={() => pane.setSelection(new Set(allSelected ? [] : entries.map(entry => entry.name)))}/> Выбрать всё</label>
+      {selected.length > 0 && <span aria-live="polite">Выбрано: {selected.length}</span>}
+    </div>}
     <div className="file-entries" aria-busy={pane.loading}>
       {pane.error && <p className="file-pane-error" role="alert">{pane.error}</p>}
       {pane.loading && !directory && <p className="file-pane-status" role="status">Загрузка каталога…</p>}
       {!pane.loading && !pane.error && !directory?.entries.length && <p className="file-pane-status">Каталог пуст</p>}
-      {directory?.entries.map(entry => <div className={'file-entry' + (pane.selection === entry.name ? ' selected' : '')} key={entry.name}>
-        <button type="button" aria-pressed={pane.selection === entry.name} onClick={() => pane.setSelection(entry.name)}
+      {entries.map(entry => <div className={'file-entry' + (pane.selection.has(entry.name) ? ' selected' : '')} key={entry.name}>
+        <input type="checkbox" aria-label={'Выбрать ' + entry.name} checked={pane.selection.has(entry.name)} onChange={() => pane.toggleSelection(entry.name)}/>
+        <button type="button" className="file-entry-name" aria-pressed={pane.selection.has(entry.name)} onClick={event => {
+          if (event.ctrlKey || event.metaKey) pane.toggleSelection(entry.name);
+          else pane.setSelection(new Set([entry.name]));
+        }}
           onDoubleClick={() => { if (entry.directory) openPath(fileChild(path, entry.name)); }}>
           {entry.directory ? <Folder size={16}/> : <File size={16}/>}
           <span title={entry.name}>{entry.name}</span>
@@ -146,7 +166,7 @@ export function FilePane({ title, model, pane }: Props) {
           if (file) void upload(file);
         }}/>
       </label>
-      {selected && !selected.directory && <a className="subtle" href={'/api/files/download?' + new URLSearchParams({ path: fileChild(path, selected.name) })}><Download size={15}/> Скачать</a>}
+      {download && <a className="subtle" href={'/api/files/download?' + new URLSearchParams({ path: fileChild(path, download.name) })}><Download size={15}/> Скачать</a>}
       {uploadError && <p className="file-pane-error" role="alert">{uploadError}</p>}
     </div>}
   </section>;

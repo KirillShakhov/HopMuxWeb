@@ -314,7 +314,8 @@ code, pre { font-family: var(--mono); }
 .tool-actions { gap: 2px; }
 .tool-actions button { font-size: 11px; white-space: nowrap; }
 .state-pill { flex: none; padding: 2px 7px; border-radius: 6px; background: var(--surface-muted); color: var(--muted); font-size: 11px; font-weight: 650; }
-.state-pill.connected, .state-pill.done, .state-pill.running { color: var(--good); background: var(--good-surface); }
+.state-pill.connected, .state-pill.done { color: var(--good); background: var(--good-surface); }
+.state-pill.running { color: var(--info); background: var(--info-surface); }
 .state-pill.error, .state-pill.cancelled { color: var(--bad); background: var(--bad-surface); }
 .state-pill.connecting, .state-pill.verifying_host_key { color: var(--accent-text); background: var(--accent-surface); }
 .terminal-view, .transfer-view { height: 100%; display: flex; flex-direction: column; }
@@ -346,11 +347,15 @@ code, pre { font-family: var(--mono); }
 .file-pane-address { display: flex; gap: 4px; align-items: center; }
 .file-pane-address input { flex: 1; font-family: var(--mono); font-size: 12px; }
 .file-entries { flex: 1; min-height: 145px; max-height: min(36vh, 350px); overflow: auto; }
-.file-entry { display: flex; border-bottom: 1px solid var(--line); }
+.file-selection { display: flex; justify-content: space-between; gap: 8px; padding: 5px 9px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.file-selection label { display: flex; align-items: center; gap: 6px; }
+.file-selection input, .file-entry > input { margin: 0; }
+.file-entry { display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+.file-entry > input { flex: none; margin-left: 9px; }
 .file-entry:hover { background: var(--hover); }
 .file-entry.selected { background: var(--accent-surface); color: var(--accent-text); }
-.file-entry > button:first-child { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 7px 9px; border: 0; background: transparent; color: inherit; text-align: left; }
-.file-entry > button:first-child span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-entry-name { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; padding: 7px 9px; border: 0; background: transparent; color: inherit; text-align: left; }
+.file-entry-name span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-entry small { flex: none; font-size: 11px; }
 .file-pane-status, .file-pane-error { padding: 9px; font-size: 12px; overflow-wrap: anywhere; }
 .file-pane-error { color: var(--bad); }
@@ -360,7 +365,10 @@ code, pre { font-family: var(--mono); }
 .file-pane-tools input[type='file'] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .file-copy-actions { margin-top: 9px; }
 .file-copy-form { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: var(--control-radius); background: var(--surface-muted); }
-.file-copy-form .form-grid { margin-top: 0; }
+.file-copy-form .form-grid { align-items: start; margin-top: 0; }
+.file-copy-selection p { font-size: 12px; overflow-wrap: anywhere; }
+.file-copy-selection ul, .file-copy-errors { max-height: 135px; overflow: auto; margin: 5px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+.file-copy-errors { color: var(--bad); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; margin-top: 16px; }
 .form-grid label, .settings-card label { display: grid; gap: 5px; min-width: 0; }
 .transfer-options { display: flex; flex-wrap: wrap; gap: 7px 16px; margin-top: 13px; color: var(--muted); font-size: 12px; }

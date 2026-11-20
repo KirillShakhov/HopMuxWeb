@@ -1,5 +1,5 @@
 import { useConfiguration } from './ConfigurationContext';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ArrowUpFromLine, Download, ExternalLink, File, FolderOpen, RefreshCw, X } from 'lucide-react';
 import { FilePane, fileChild, useFilePane } from './FilePane';
 import { json, stateLabel, transferDraft, type FileEndpoint, type Model, type Transfer, type TransferDraft, type UiSettings } from './lib';
@@ -12,59 +12,103 @@ type Props = {
   initialTarget?: string;
   initialRoute?: string;
   focusedId?: string;
+  transferIds?: string[];
   separate?: boolean;
   onCreated?: (transferId: string) => void;
   onRefresh: () => void;
   onError: (error: unknown) => void;
 };
 
-const endpointLabel = ({ host, path }: FileEndpoint) => host ? host + ':' + path : '/files/' + path;
+const endpointLabel = ({ host, path }: FileEndpoint) => host ? host + ':' + path : path === '.' ? '/files' : '/files/' + path;
+type CopyDraft = TransferDraft & { names?: string[] };
 
-export function TransferView({ model, transfers, settings, initialTarget = '', initialRoute = '', focusedId, separate = false, onCreated, onRefresh, onError }: Props) {
+export function TransferView({ model, transfers, settings, initialTarget = '', initialRoute = '', focusedId, transferIds, separate = false, onCreated, onRefresh, onError }: Props) {
   const { api, url } = useConfiguration();
   const { request: vaultRequest } = useVault();
   const left = useFilePane('', '', !separate);
   const right = useFilePane(initialTarget, initialRoute, !separate);
-  const [draft, setDraft] = useState<TransferDraft>();
+  const [draft, setDraft] = useState<CopyDraft>();
+  const draftForm = useRef<HTMLFormElement>(null);
+  const hasDraft = Boolean(draft);
+  const [startErrors, setStartErrors] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [selectedTask, setSelectedTask] = useState(focusedId || '');
   const selected = transfers.find(item => item.id === selectedTask);
   const visible = separate ? transfers.filter(item => item.id === focusedId) : [...transfers].reverse();
 
   useEffect(() => { if (focusedId) setSelectedTask(focusedId); }, [focusedId]);
+  useEffect(() => { if (hasDraft) draftForm.current?.scrollIntoView({ block: 'nearest' }); }, [hasDraft]);
   const { refresh: refreshLeft } = left;
   const { refresh: refreshRight } = right;
+  const completed = transfers
+    .filter(item => item.state === 'done' && (item.id === selectedTask || transferIds?.includes(item.id)))
+    .map(item => item.id).join(',');
   useEffect(() => {
-    if (!separate && selected?.state === 'done') {
+    if (!separate && completed) {
       refreshLeft();
       refreshRight();
     }
-  }, [selected?.id, selected?.state, separate, refreshLeft, refreshRight]);
+  }, [completed, separate, refreshLeft, refreshRight]);
+
+  const openDraft = (next: CopyDraft) => {
+    setStartErrors([]);
+    setDraft(next);
+  };
 
   const prepare = (from: typeof left, to: typeof right) => {
-    const name = from.selected?.name;
-    const destinationPath = to.endpoint.host && to.endpoint.path === '.' ? '/' : to.endpoint.path;
-    setDraft({
+    const name = from.selected[0]?.name;
+    const destinationPath = to.directory?.path ?? '';
+    if (from.selected.length > 1) {
+      openDraft({
+        source: from.endpoint,
+        destination: { ...to.endpoint, path: destinationPath },
+        names: from.selected.map(entry => entry.name),
+        verify: false,
+      });
+      return;
+    }
+    openDraft({
       source: { ...from.endpoint, path: name ? fileChild(from.endpoint.path, name) : '' },
-      destination: { ...to.endpoint, path: name && to.directory ? fileChild(destinationPath, name) : '' },
+      destination: { ...to.endpoint, path: name && destinationPath ? fileChild(destinationPath, name) : '' },
       verify: false,
     });
   };
 
-  const start = async (job: TransferDraft) => {
-    if (settings.confirmTransfer && !confirm(`Копировать ${endpointLabel(job.source)} → ${endpointLabel(job.destination)}?`)) return;
+  const start = async ({ names, ...job }: CopyDraft) => {
+    const prompt = names
+      ? `Копировать выбранные элементы (${names.length}) в ${endpointLabel(job.destination)}?`
+      : `Копировать ${endpointLabel(job.source)} → ${endpointLabel(job.destination)}?`;
+    if (settings.confirmTransfer && !confirm(prompt)) return;
+    const jobs = names ? names.map(name => ({
+      source: { ...job.source, path: fileChild(job.source.path, name) },
+      destination: { ...job.destination, path: fileChild(job.destination.path, name) },
+      verify: job.verify,
+    })) : [job];
     setBusy(true);
-    try {
-      const created = await vaultRequest(() => api<Transfer>('/transfers', json('POST', job)));
-      setSelectedTask(created.id);
-      setDraft(undefined);
-      onCreated?.(created.id);
-      onRefresh();
-    } catch (error) {
-      onError(error);
-    } finally {
-      setBusy(false);
+    setStartErrors([]);
+    const failed: number[] = [];
+    const errors: string[] = [];
+    let started = 0;
+    for (const [index, transfer] of jobs.entries()) {
+      try {
+        const created = await vaultRequest(() => api<Transfer>('/transfers', json('POST', transfer)));
+        started++;
+        setSelectedTask(created.id);
+        onCreated?.(created.id);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          for (let remaining = index; remaining < jobs.length; remaining++) failed.push(remaining);
+          break;
+        }
+        failed.push(index);
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(names ? `${names[index]} — ${message}` : message);
+      }
     }
+    setDraft(failed.length ? { ...job, names: names && failed.map(index => names[index]) } : undefined);
+    setStartErrors(errors);
+    setBusy(false);
+    if (started) onRefresh();
   };
 
   return <div className="transfer-view">
@@ -82,15 +126,18 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
           <button type="button" className="subtle" aria-label="Копировать слева направо" disabled={busy || !left.endpoint.host && !right.endpoint.host} onClick={() => prepare(left, right)}>Копировать <ArrowRight size={16}/></button>
           <button type="button" className="subtle" aria-label="Копировать справа налево" disabled={busy || !left.endpoint.host && !right.endpoint.host} onClick={() => prepare(right, left)}><ArrowLeft size={16}/> Копировать</button>
         </div>
-        {draft && <form className="file-copy-form" onSubmit={event => { event.preventDefault(); void start(draft); }}>
+        {draft && <form ref={draftForm} className="file-copy-form" onSubmit={event => { event.preventDefault(); void start(draft); }}>
           <div className="form-grid">
-            <label>Источник · {draft.source.host || '/files'}
+            {draft.names ? <div className="file-copy-selection">
+              <p>Источник · {endpointLabel(draft.source)}</p>
+              <ul aria-label="Выбранные элементы">{draft.names.map(name => <li key={name}>{name}</li>)}</ul>
+            </div> : <label>Источник · {draft.source.host || '/files'}
               <input aria-label="Путь источника" value={draft.source.path} required disabled={busy}
                 placeholder={draft.source.host ? '/путь/к/файлу' : 'каталог/файл'}
                 onChange={event => setDraft({ ...draft, source: { ...draft.source, path: event.target.value } })}/>
-            </label>
-            <label>Назначение · {draft.destination.host || '/files'}
-              <input aria-label="Путь назначения" value={draft.destination.path} required disabled={busy}
+            </label>}
+            <label>{draft.names ? 'Каталог назначения' : 'Назначение'} · {draft.destination.host || '/files'}
+              <input aria-label={draft.names ? 'Каталог назначения' : 'Путь назначения'} value={draft.destination.path} required disabled={busy}
                 placeholder={draft.destination.host ? '/путь/к/файлу' : 'каталог/файл'}
                 onChange={event => setDraft({ ...draft, destination: { ...draft.destination, path: event.target.value } })}/>
             </label>
@@ -98,6 +145,9 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
           <div className="transfer-options">
             <label><input type="checkbox" checked={draft.verify} disabled={busy} onChange={event => setDraft({ ...draft, verify: event.target.checked })}/> Проверить SHA-256</label>
           </div>
+          {startErrors.length > 0 && <ul className="file-copy-errors" role="alert">
+            {startErrors.map((message, index) => <li key={index}>{message}</li>)}
+          </ul>}
           <div className="file-copy-actions">
             <button type="submit" className="primary" disabled={busy || !draft.source.path || !draft.destination.path}>{busy ? 'Запуск…' : 'Начать передачу'}</button>
             <button type="button" className="subtle" disabled={busy} onClick={() => setDraft(undefined)}>Отмена</button>
@@ -119,7 +169,7 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
             <span className={'state-pill ' + item.state}>{stateLabel[item.state] || item.state}</span>
             {!destination.host && !recursive && item.state === 'done' && <a href={'/api/files/download?' + new URLSearchParams({ path: destination.path })} aria-label="Скачать на компьютер" title="Скачать на компьютер"><Download size={16}/></a>}
             {running && <button type="button" className="icon-button" title="Отменить передачу" aria-label="Отменить передачу" onClick={() => api('/transfers/' + item.id + '/cancel', { method: 'POST' }).then(onRefresh).catch(onError)}><X size={16}/></button>}
-            {retryable && <button type="button" className="icon-button" title="Повторить передачу" aria-label="Повторить передачу" disabled={busy} onClick={() => setDraft({ source, destination, verify })}><RefreshCw size={16}/></button>}
+            {retryable && <button type="button" className="icon-button" title="Повторить передачу" aria-label="Повторить передачу" disabled={busy} onClick={() => openDraft({ source, destination, verify })}><RefreshCw size={16}/></button>}
           </div>;
         })}
         {!visible.length && <div className="empty-list"><FolderOpen size={24}/><p>{separate ? 'Операция не найдена' : 'Задачи появятся здесь после запуска передачи'}</p></div>}
