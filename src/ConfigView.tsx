@@ -1,5 +1,5 @@
 import { useConfiguration } from './ConfigurationContext';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Editor, { type BeforeMount } from '@monaco-editor/react';
 import { Background, Handle, MarkerType, Panel as FlowPanel, Position, ReactFlow, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
@@ -7,7 +7,8 @@ import { Check, Code2, ExternalLink, FileCode2, GitBranch, HardDrive, Maximize2,
 import { findDetourLane, GraphEdge, graphNodeSize } from './GraphEdge';
 import { json, routeLabel, type Model, type Route, type SecretOperation, type Theme } from './lib';
 import { VisualRoutes } from './VisualRoutes';
-import { useVault } from './VaultView';
+import { useVault, VaultBindingSelect } from './VaultView';
+import { Link } from 'react-router';
 
 type Props = {
   model: Model | null;
@@ -134,9 +135,8 @@ function graphElements(model: Model | null, selectedRoute: string, selectedHost:
 }
 
 export function ConfigView({ onCreateConfiguration, onDirty, model, theme, focusHost, onSaved, openTerminal, openTransfer, onError }: Props) {
-  const { api, config } = useConfiguration();
-  const { status: vaultStatus, refresh: refreshVault } = useVault();
-  const vaultEntriesId = useId();
+  const { api, config, url } = useConfiguration();
+  const { selection: vaultSelection, status: vaultStatus, refresh: refreshVault, askUnlock } = useVault();
   useEffect(() => { refreshVault().catch(() => {}); }, [refreshVault]);
   const [stackGraph, setStackGraph] = useState(() => matchMedia('(max-width: 650px)').matches);
   const [mode, setMode] = useState<Mode>('graph');
@@ -352,6 +352,9 @@ export function ConfigView({ onCreateConfiguration, onDirty, model, theme, focus
   return <div className="page config-page">
     <div className="page-title"><div><h1>Конфигурация {dirty && <span className="dirty-dot" title="Есть несохранённые изменения" aria-label="Есть несохранённые изменения"/>}</h1><p>Хосты, маршруты и исходный TOML</p></div><div className="title-actions"><button className="subtle" disabled={busy} onClick={onCreateConfiguration}><Plus size={16}/> Создать конфигурацию</button><button className="subtle" disabled={busy} onClick={check}><Check size={16}/> Проверить</button><button className="primary" disabled={busy || !model || !dirty} onClick={save}>{busy ? 'Подождите…' : 'Сохранить'}</button></div></div>
     <div className="config-toolbar"><div className="segmented"><button className={mode === 'graph' ? 'on' : ''} onClick={() => switchMode('graph')}><GitBranch size={15}/> Граф</button><button className={mode === 'visual' ? 'on' : ''} onClick={() => switchMode('visual')}><Settings2 size={15}/> Визуально</button><button className={mode === 'raw' ? 'on' : ''} onClick={() => switchMode('raw')}><Code2 size={15}/> TOML</button></div><span className={message && !message.startsWith('Сохранено') && !message.startsWith('config OK') ? 'config-error' : ''}>{message}</span></div>
+    {vaultSelection && <div className="config-vault-settings">
+      <VaultBindingSelect disabled={busy} onError={onError}/>
+    </div>}
     {mode === 'graph' && <div className="graph-layout"><PanelGroup key={stackGraph ? 'vertical' : 'horizontal'} direction={stackGraph ? 'vertical' : 'horizontal'}><Panel minSize={stackGraph ? 35 : 48} defaultSize={stackGraph ? 55 : 72}><div className="graph-canvas"><ReactFlow colorMode={theme === 'dark' ? 'dark' : 'light'} nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodeClick={(_, node) => { if (node.id !== 'local') { setSelectedHost(node.id); setInspector('host'); } }} fitView minZoom={.2} maxZoom={2}><Background color="var(--graph-dot)" gap={22}/><FlowPanel position="top-left" className="graph-tools"><button title="Показать весь граф" onClick={() => flow.current?.fitView({ duration: 250, padding: .2 })}><Maximize2 size={15}/> Весь граф</button><button title="Сбросить масштаб" onClick={() => flow.current?.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 250 })}>100%</button><button title="Приблизить" onClick={() => flow.current?.zoomIn({ duration: 200 })}>+</button><button title="Отдалить" onClick={() => flow.current?.zoomOut({ duration: 200 })}>−</button></FlowPanel></ReactFlow><div className="graph-legend"><span className="legend-line"/> Стрелки показывают настроенные переходы</div></div></Panel><PanelResizeHandle className={stackGraph ? 'resize-handle vertical' : 'resize-handle'}/><Panel minSize={stackGraph ? 30 : 20} defaultSize={stackGraph ? 45 : 28}><div className="graph-side"><div className="side-heading">Маршруты <span>{filteredRoutes.length}</span></div><div className="graph-filter"><div className="search"><Search size={15}/><input aria-label="Поиск маршрута" placeholder="Маршрут или хост" value={routeSearch} onChange={event => setRouteSearch(event.target.value)}/></div><select aria-label="Фильтр по цели" value={routeTarget} onChange={event => setRouteTarget(event.target.value)}><option value="">Все цели</option>{[...new Set(visual?.routes.map(item => item.target) || [])].sort().map(target => <option key={target}>{target}</option>)}</select></div><div className="graph-route-list">{filteredRoutes.map(item => <button key={item.name} className={selectedRoute === item.name ? 'active' : ''} onClick={() => chooseRoute(item)}><GitBranch size={15}/><span><strong>{item.name}</strong><small>{routeLabel(item)}</small></span></button>)}</div><div className="graph-inspector"><div className="inspector-tabs"><button className={inspector === 'route' ? 'active' : ''} onClick={() => setInspector('route')}>Маршрут</button><button className={inspector === 'host' ? 'active' : ''} onClick={() => setInspector('host')}>Хост</button></div>{inspector === 'route' ? route ? <div className="inspector-body"><h3>{route.name}</h3><p>Цель: <strong>{route.target}</strong></p><ol>{['local', ...route.hops].map((hop, index) => <li key={index}>{hop}</li>)}</ol><div className="inspector-actions"><button onClick={() => openTerminal(route.target, route.name)}><Terminal size={14}/> Терминал</button><button onClick={() => openTransfer(route.target, route.name)}><ExternalLink size={14}/> Файлы</button></div></div> : <p className="inspector-empty">Выберите маршрут, чтобы увидеть точную цепочку.</p> : host ? <div className="inspector-body"><h3>{selectedHost}</h3><p>{host.user}@{host.host}:{host.port || 22}</p><p>Маршрутов: {visual?.routes.filter(item => item.target === selectedHost).length || 0}</p><div className="inspector-actions"><button onClick={() => openTerminal(selectedHost, '')}><Terminal size={14}/> Терминал</button><button onClick={() => openTransfer(selectedHost, '')}><ExternalLink size={14}/> Файлы</button><button onClick={() => { setVisualSection('hosts'); switchMode('visual'); }}><Settings2 size={14}/> Изменить</button></div></div> : <p className="inspector-empty">Выберите узел графа или хост слева.</p>}</div></div></Panel></PanelGroup></div>}
     {mode === 'visual' && <div className="visual-shell">
       <div className="segmented visual-section-switch" role="group" aria-label="Разделы визуального редактора">
@@ -420,13 +423,20 @@ export function ConfigView({ onCreateConfiguration, onDirty, model, theme, focus
                       onChange={event => changeAuthReference('env', event.target.value)}/>
                     <small>Переменная должна быть доступна внутри контейнера.</small>
                   </label>}
-                  {authMethod === 'vault' && <label>Имя записи в хранилище
-                    <input required spellCheck={false} value={host.password_vault || ''} placeholder="server1"
-                      list={vaultStatus?.unlocked ? vaultEntriesId : undefined}
-                      onChange={event => changeAuthReference('vault', event.target.value)}/>
-                    {vaultStatus?.unlocked && <datalist id={vaultEntriesId}>{vaultStatus.entries.map(name => <option value={name} key={name}/>)}</datalist>}
-                    <small>{vaultStatus?.unlocked ? 'Выберите запись или укажите её имя.' : 'Разблокируйте vault в разделе «Хранилище», чтобы увидеть доступные записи.'}</small>
-                  </label>}
+                  {authMethod === 'vault' && <div className="vault-entry-field">
+                    <label>Запись в хранилище
+                      <select aria-label="Запись в хранилище" value={host.password_vault || ''} disabled={!vaultStatus?.unlocked || !vaultStatus.entries.length}
+                        onChange={event => changeAuthReference('vault', event.target.value)}>
+                        <option value="" disabled>Выберите запись</option>
+                        {host.password_vault && !vaultStatus?.entries.includes(host.password_vault)
+                          && <option value={host.password_vault} disabled>{host.password_vault}{vaultStatus?.unlocked ? ' · недоступна' : ''}</option>}
+                        {(vaultStatus?.entries ?? []).map(name => <option value={name} key={name}>{name}</option>)}
+                      </select>
+                    </label>
+                    {vaultStatus?.exists && !vaultStatus.unlocked
+                      ? <button type="button" className="text-action" onClick={() => void askUnlock()}>Разблокировать хранилище</button>
+                      : !vaultStatus?.entries.length && <Link className="text-action" to={url('/vault')}>{vaultStatus?.unlocked ? 'Добавить запись' : 'Открыть хранилище'}</Link>}
+                  </div>}
                 </div>
                 {authMethod === 'inline' && <p className="password-hint">Сохранённое значение скрыто в интерфейсе и редакторе TOML.</p>}
                 {authMethod === 'agent' && <p className="password-hint">Ключи берутся из SSH-агента, доступного внутри контейнера.</p>}

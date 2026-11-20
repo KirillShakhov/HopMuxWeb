@@ -18,3 +18,11 @@
 .vault-dialog::backdrop { background: #10152777; }
 .vault-dialog h2 { margin-bottom: 7px; }
 @media (max-width: 720px) { .vault-layout { grid-template-columns: 1fr; } }
+.vault-binding { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 14px; margin-bottom: 14px; }
+.vault-binding .field-block { flex: 1 1 220px; max-width: 420px; min-width: 0; }
+.vault-binding label { display: grid; gap: 5px; min-width: 0; }
+.vault-binding select { width: 100%; }
+.config-vault-settings { padding: 0 0 12px; }
+.config-vault-settings label { display: grid; gap: 5px; width: min(420px, 100%); }
+.vault-entry-field { display: grid; justify-items: start; gap: 4px; min-width: 0; }
+.vault-entry-field label { width: 100%; }

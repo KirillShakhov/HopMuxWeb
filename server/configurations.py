@@ -5,6 +5,20 @@ from pathlib import Path
 import tomlkit
 
 
+VAULT_PREFIX = "# hopmuxweb-vault = "
+
+
+def split_vault_binding(raw: str) -> tuple[str | None, str]:
+    first, _, rest = raw.partition("\n")
+    if first.startswith(VAULT_PREFIX):
+        return first[len(VAULT_PREFIX):].strip(), rest
+    return None, raw
+
+
+def with_vault_binding(raw: str, vault_id: str) -> str:
+    return f"{VAULT_PREFIX}{vault_id}\n{split_vault_binding(raw)[1]}"
+
+
 def include_paths(path: Path, document):
     includes = document.get("include", [])
     if isinstance(includes, list):

@@ -1,4 +1,5 @@
 """Local adapter smoke test using the actual mssh release binary."""
+import json
 import os
 import sys
 import tempfile
@@ -161,4 +162,50 @@ with TestClient(app) as client:
     assert client.put("/api/config", params=params, json={"text": first_host, "version": blank["version"]}).status_code == 200
     assert client.get("/api/config", params=params).json()["nodes"]["first"]["host"] == "first.test.invalid"
     assert config.read_text(encoding="utf-8") == original
+
+    lab_scope = {"config": "lab.toml"}
+    first_scope = {"config": name}
+    named_login = {"password": "lab-master", "confirmation": "lab-master"}
+    named = client.post("/api/vaults", params=lab_scope, json={"name": "Лаборатория", **named_login})
+    assert named.status_code == 201, named.text
+    vault_id = named.json()["selected"]
+    assert vault_id != "shared"
+    assert lab.read_text(encoding="utf-8").startswith(f"# hopmuxweb-vault = {vault_id}\n")
+    model = client.get("/api/config", params=lab_scope).json()
+    assert "hopmuxweb-vault" not in model["text"]
+    assert model["version"] == saved_lab.json()["version"]
+    edited_lab = model["text"].replace("lab-updated.test.invalid", "vault-bound.test.invalid")
+    saved_again = client.put("/api/config", params=lab_scope, json={"text": edited_lab, "version": model["version"]})
+    assert saved_again.status_code == 200, saved_again.text
+    assert lab.read_text(encoding="utf-8").startswith(f"# hopmuxweb-vault = {vault_id}\n")
+    assert "hopmuxweb-vault" not in saved_again.json()["text"]
+    assert named.json()["status"] == {"exists": True, "unlocked": True, "entries": []}
+    assert client.get("/api/vault").json()["entries"] == ["edge-auth"]
+    assert client.post("/api/vaults", params=first_scope, json={"name": "лаборатория", **named_login}).status_code == 409
+    assert client.put("/api/vault/entries", params={**lab_scope, "vault": "shared"}, json=entry).status_code == 409
+    assert client.put("/api/vault/entries", params=lab_scope, json=entry).status_code == 200
+    assert client.request("DELETE", "/api/vault/entries", params=lab_scope, json={"name": "edge-auth"}).status_code == 200
+    assert client.get("/api/vault").json()["entries"] == ["edge-auth"]
+    assert client.put("/api/vault/entries", params=lab_scope, json={"name": "lab-entry", "password": "lab-secret"}).status_code == 200
+    assert client.post("/api/vault/lock", params=lab_scope).status_code == 200
+    assert client.get("/api/vault").json()["unlocked"]
+    assert client.post("/api/vault/unlock", params=lab_scope, json={"password": "rotated"}).status_code == 400
+    assert client.post("/api/vault/unlock", params=lab_scope, json=named_login).json()["entries"] == ["lab-entry"]
+    reused = client.put("/api/vault/binding", params=first_scope, json={"id": vault_id})
+    assert reused.json()["status"]["entries"] == ["lab-entry"]
+    assert client.put("/api/vault/binding", params=lab_scope, json={"id": "shared"}).json()["status"]["entries"] == ["edge-auth"]
+    catalog_file = config.parent / ".hopmux-vaults" / "catalog.json"
+    catalog_text = catalog_file.read_text(encoding="utf-8")
+    assert "lab-master" not in catalog_text
+    catalog = json.loads(catalog_text)
+    assert catalog["bindings"] == {}
+    lab.write_text(saved_again.json()["text"], encoding="utf-8")
+    catalog["bindings"]["lab.toml"] = vault_id
+    catalog_file.write_text(json.dumps(catalog), encoding="utf-8")
+
+with TestClient(app) as migrated:
+    assert migrated.post("/api/login", json={"token": "smoke-token"}).status_code == 200
+    assert migrated.get("/api/vaults", params=lab_scope).json()["selected"] == vault_id
+    assert lab.read_text(encoding="utf-8").startswith(f"# hopmuxweb-vault = {vault_id}\n")
+    assert json.loads(catalog_file.read_text(encoding="utf-8"))["bindings"] == {}
 print("Smoke checks passed")

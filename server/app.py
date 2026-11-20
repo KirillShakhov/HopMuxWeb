@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import pty
 import re
@@ -23,8 +24,9 @@ from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile, W
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .configurations import create_configuration, discover, vault_references
-from .vault import COOKIE as VAULT_COOKIE, LEASE_SECONDS, Vault, VaultAccess, master_password, spawn_cli
+from .configurations import create_configuration, discover, split_vault_binding, vault_references, with_vault_binding
+from .vault import LEASE_SECONDS, Vault, VaultAccess, master_password, spawn_cli
+from .vaults import SHARED, VaultRegistry, cookie_name
 
 CONFIG_LOCATION = Path(os.getenv("HOPMUX_CONFIG", "/config/config.toml")).absolute()
 CONFIG_DIR = (CONFIG_LOCATION if CONFIG_LOCATION.is_dir() else CONFIG_LOCATION.parent).resolve()
@@ -44,7 +46,9 @@ transfers: dict[str, dict[str, Any]] = {}
 transfer_processes: dict[str, asyncio.subprocess.Process] = {}
 config_lock = asyncio.Lock()
 HISTORY = DATA / "transfers.json"
-vault = Vault(CLI, DEFAULT_CONFIG, Path(os.environ["HOPMUX_VAULT_FILE"]) if os.getenv("HOPMUX_VAULT_FILE") else None)
+vaults = VaultRegistry(CONFIG_DIR / ".hopmux-vaults", Vault(
+    CLI, DEFAULT_CONFIG, Path(os.environ["HOPMUX_VAULT_FILE"]) if os.getenv("HOPMUX_VAULT_FILE") else None,
+))
 
 
 def config_profiles():
@@ -138,10 +142,13 @@ async def auth(request: Request):
 
 @app.post("/api/logout")
 async def logout(request: Request):
-    vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
     response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE, path="/")
-    response.delete_cookie(VAULT_COOKIE, path="/")
+    for vault_id, vault in vaults.vaults.items():
+        cookie = cookie_name(vault_id)
+        if cookie in request.cookies:
+            vault.leases.pop(request.cookies[cookie], None)
+            response.delete_cookie(cookie, path="/")
     return response
 
 
@@ -152,8 +159,12 @@ def config_text() -> str:
         error(f"Не удалось прочитать конфиг: {exc}", 500)
 
 
+def config_version(raw: str) -> str:
+    return hashlib.sha256(split_vault_binding(raw)[1].encode()).hexdigest()
+
+
 def redact_document(raw: str) -> str:
-    doc = tomlkit.parse(raw)
+    doc = tomlkit.parse(split_vault_binding(raw)[1])
     for node in doc.get("nodes", {}).values():
         if "password" in node:
             node.pop("password")
@@ -163,7 +174,7 @@ def redact_document(raw: str) -> str:
 def restore_secrets(candidate: str, original: str, operations: dict | None = None) -> str:
     operations = operations or {}
     try:
-        new = tomlkit.parse(candidate)
+        new = tomlkit.parse(split_vault_binding(candidate)[1])
     except Exception as exc:
         error(f"Ошибка TOML: {exc}")
     try:
@@ -191,7 +202,9 @@ def restore_secrets(candidate: str, original: str, operations: dict | None = Non
             if not isinstance(value, str) or not value:
                 error(f"Введите новый пароль узла {name}")
             node["password"] = value
-    return tomlkit.dumps(new)
+    text = tomlkit.dumps(new)
+    vault_id, _ = split_vault_binding(original)
+    return with_vault_binding(text, vault_id) if vault_id is not None else text
 
 
 def route_model(document) -> list[dict[str, Any]]:
@@ -231,7 +244,8 @@ def route_model(document) -> list[dict[str, Any]]:
 
 
 def public_model(raw: str):
-    version = hashlib.sha256(raw.encode()).hexdigest()
+    version = config_version(raw)
+    raw = split_vault_binding(raw)[1]
     try:
         doc = tomlkit.parse(raw)
     except Exception as exc:
@@ -246,7 +260,7 @@ def public_model(raw: str):
     return {"nodes": nodes, "direct_hosts": list(doc.get("direct_hosts", [])), "paths": [list(p) for p in doc.get("paths", [])], "routes": route_model(doc), "legacy": not bool(doc.get("direct_hosts", []) or doc.get("paths", [])), "text": redact_document(raw), "version": version}
 
 
-async def cli_run(*args: str, timeout: int = 30, input_text: str | None = None, access: VaultAccess | None = None):
+async def cli_run(*args: str, timeout: int = 30, input_text: str | None = None, access: VaultAccess | Path | None = None):
     process = await spawn_cli(CLI, args, vault=access, stdin=asyncio.subprocess.PIPE if input_text is not None else asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, err = await asyncio.wait_for(process.communicate(input_text.encode() if input_text else None), timeout)
@@ -326,10 +340,10 @@ async def preview_config(request: Request):
         if "Ошибка TOML" not in str(exc.detail):
             raise
         result = public_model(body["text"])
-        result["version"] = hashlib.sha256(original.encode()).hexdigest()
+        result["version"] = config_version(original)
         return result
     result = public_model(candidate)
-    result["version"] = hashlib.sha256(original.encode()).hexdigest()
+    result["version"] = config_version(original)
     return result
 
 
@@ -385,21 +399,47 @@ async def compose_config(request: Request):
     result = public_model(candidate)
     if result.get("parse_error"):
         error(result["parse_error"])
-    result["version"] = hashlib.sha256(original.encode()).hexdigest()
+    result["version"] = config_version(original)
     return result
 
 
-def write_config(candidate: str):
-    config = active_config.get()
-    backup = config.with_suffix(config.suffix + ".bak")
-    tmp = config.with_suffix(config.suffix + ".new")
-    shutil.copy2(config, backup)
+def write_config(candidate: str, *, config: Path | None = None, backup: bool = True):
+    config = config or active_config.get()
+    mode = config.stat().st_mode & 0o777
+    if backup:
+        shutil.copy2(config, config.with_suffix(config.suffix + ".bak"))
+    fd, temporary = tempfile.mkstemp(prefix=".hopmux-write-", dir=config.parent)
+    tmp = Path(temporary)
     try:
-        tmp.write_text(candidate, encoding="utf-8")
-        os.chmod(tmp, config.stat().st_mode & 0o777)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(candidate)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, mode)
         os.replace(tmp, config)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+@app.on_event("startup")
+async def migrate_vault_bindings():
+    try:
+        async with config_lock:
+            catalog = vaults.read()
+            if not catalog["bindings"]:
+                return
+            profiles = config_profiles()
+            for name, vault_id in list(catalog["bindings"].items()):
+                config = profiles.get(name)
+                if config is None:
+                    continue
+                raw = config.read_text(encoding="utf-8")
+                if split_vault_binding(raw)[0] is None:
+                    write_config(with_vault_binding(raw, vault_id), config=config, backup=False)
+                del catalog["bindings"][name]
+            vaults.save(catalog)
+    except (HTTPException, OSError, UnicodeError):
+        logging.getLogger(__name__).warning("Could not migrate legacy vault bindings into TOML")
 
 
 @app.put("/api/config")
@@ -407,7 +447,7 @@ async def put_config(request: Request):
     body = await request.json()
     async with config_lock:
         original = config_text()
-        if hashlib.sha256(original.encode()).hexdigest() != body.get("version"):
+        if config_version(original) != body.get("version"):
             error("Конфигурация изменилась на диске. Обновите страницу перед сохранением.", 409)
         candidate = restore_secrets(body.get("text", ""), original, body.get("secret_operations"))
         await validate_config(candidate)
@@ -420,7 +460,7 @@ async def put_visual(request: Request):
     body = await request.json()
     async with config_lock:
         original = config_text()
-        if hashlib.sha256(original.encode()).hexdigest() != body.get("version"):
+        if config_version(original) != body.get("version"):
             error("Конфигурация изменилась на диске", 409)
         candidate = compose_visual(original, body.get("model", {}), bool(body.get("legacy")))
         candidate = restore_secrets(candidate, original, body.get("secret_operations"))
@@ -439,18 +479,107 @@ def selected_routes(model, target: str, route: str = ""):
             if item["target"] == target and not item.get("disabled") and (not route or item["name"] == route)]
 
 
-def vault_access(request: Request, model, target: str, route: str = ""):
-    selected = selected_routes(model, target, route)
-    entries = [
-        {name for hop in item["hops"] if (name := model["nodes"].get(hop, {}).get("password_vault"))}
-        for item in selected
-    ]
-    return vault.access(request.cookies.get(VAULT_COOKIE), entries)
+def expected_vault(request: Request, catalog):
+    vault_id = vaults.selected(active_config.get(), catalog)
+    expected = request.query_params.get("vault")
+    if expected is not None and expected != vault_id:
+        error("Привязка хранилища изменилась. Обновите страницу", 409)
+    return vault_id
+
+
+def bound_vault(request: Request):
+    catalog = vaults.read()
+    vault_id = expected_vault(request, catalog)
+    if vault_id != SHARED and vault_id not in catalog["names"]:
+        error("Назначенное хранилище недоступно. Выберите другое в конфигурации", 409)
+    return vault_id, vaults.for_config(vault_id, active_config.get())
+
+
+def vault_access(request: Request, model, *endpoints: tuple[str, str], binding=None):
+    vault_id, vault = binding or bound_vault(request)
+    token = request.cookies.get(cookie_name(vault_id))
+    access = None
+    for target, route in endpoints:
+        entries = [
+            {name for hop in item["hops"] if (name := model["nodes"].get(hop, {}).get("password_vault"))}
+            for item in selected_routes(model, target, route)
+        ]
+        lease = vault.access(token, entries)
+        if lease is not None:
+            access = lease
+    return access if access is not None else vault.path()
+
+
+def vault_selection(request: Request, catalog, token=None):
+    config = active_config.get()
+    vault_id = vaults.selected(config, catalog)
+    status = {"exists": False, "unlocked": False, "entries": []}
+    if vault_id == SHARED or vault_id in catalog["names"]:
+        vault = vaults.for_config(vault_id, config)
+        status = vault.status(token or request.cookies.get(cookie_name(vault_id)))
+    return {"selected": vault_id, "vaults": vaults.list(catalog), "status": status}
+
+
+def vault_cookie_response(request: Request, vault_id: str, token: str, data, status_code=200):
+    response = JSONResponse(data, status_code=status_code, headers={"Cache-Control": "no-store"})
+    response.set_cookie(cookie_name(vault_id), token, max_age=LEASE_SECONDS, httponly=True,
+                        secure=request.url.scheme == "https", samesite="strict", path="/")
+    return response
+
+
+@app.get("/api/vaults")
+async def list_vaults(request: Request):
+    return JSONResponse(vault_selection(request, vaults.read()), headers={"Cache-Control": "no-store"})
+
+
+def save_vault_binding(vault_id: str):
+    try:
+        write_config(with_vault_binding(config_text(), vault_id), backup=False)
+    except PermissionError:
+        error("Нет доступа на запись в файл конфигурации", 403)
+    except OSError:
+        error("Не удалось записать привязку в файл конфигурации", 500)
+
+
+@app.put("/api/vault/binding")
+async def bind_vault(request: Request):
+    body = await request.json()
+    vault_id = body.get("id") if isinstance(body, dict) else None
+    if not isinstance(vault_id, str):
+        error("Выберите хранилище")
+    async with config_lock:
+        catalog = vaults.read()
+        expected_vault(request, catalog)
+        if vault_id != SHARED and vault_id not in catalog["names"]:
+            error("Хранилище не найдено", 404)
+        save_vault_binding(vault_id)
+        return JSONResponse(vault_selection(request, catalog), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/vaults", status_code=201)
+async def create_named_vault(request: Request):
+    body = await request.json()
+    name = body.get("name") if isinstance(body, dict) else None
+    if not isinstance(name, str) or not name.strip() or not name.strip().isprintable():
+        error("Введите имя хранилища")
+    password = master_password(body.get("password"))
+    if body.get("password") != body.get("confirmation"):
+        error("Мастер-пароли не совпадают")
+    async with config_lock:
+        catalog = vaults.read()
+        expected_vault(request, catalog)
+        vault_id, token = await vaults.create(active_config.get(), name.strip(), password, catalog)
+        try:
+            save_vault_binding(vault_id)
+        except HTTPException as exc:
+            error(f"Хранилище создано. {exc.detail}", exc.status_code)
+        return vault_cookie_response(request, vault_id, token, vault_selection(request, catalog, token), status_code=201)
 
 
 @app.get("/api/vault")
 async def vault_status(request: Request):
-    return JSONResponse(vault.status(request.cookies.get(VAULT_COOKIE)), headers={"Cache-Control": "no-store"})
+    vault_id, vault = bound_vault(request)
+    return JSONResponse(vault.status(request.cookies.get(cookie_name(vault_id))), headers={"Cache-Control": "no-store"})
 
 
 async def open_vault(request: Request, *, create=False):
@@ -458,12 +587,10 @@ async def open_vault(request: Request, *, create=False):
     password = master_password(body.get("password"))
     if create and body.get("password") != body.get("confirmation"):
         error("Мастер-пароли не совпадают")
-    token = await vault.for_config(active_config.get()).unlock(password, create=create)
-    vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
-    response = JSONResponse(vault.status(token), headers={"Cache-Control": "no-store"})
-    response.set_cookie(VAULT_COOKIE, token, max_age=LEASE_SECONDS, httponly=True,
-                        secure=request.url.scheme == "https", samesite="strict")
-    return response
+    vault_id, vault = bound_vault(request)
+    token = await vault.unlock(password, create=create)
+    vault.leases.pop(request.cookies.get(cookie_name(vault_id)), None)
+    return vault_cookie_response(request, vault_id, token, vault.status(token))
 
 
 @app.post("/api/vault/create")
@@ -478,9 +605,11 @@ async def unlock_vault(request: Request):
 
 @app.post("/api/vault/lock")
 async def lock_vault(request: Request):
-    vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
-    response = JSONResponse(vault.status(None))
-    response.delete_cookie(VAULT_COOKIE)
+    vault_id, vault = bound_vault(request)
+    cookie = cookie_name(vault_id)
+    vault.leases.pop(request.cookies.get(cookie), None)
+    response = JSONResponse(vault.status(None), headers={"Cache-Control": "no-store"})
+    response.delete_cookie(cookie)
     return response
 
 
@@ -505,7 +634,8 @@ async def save_vault_entry(request: Request):
             error("Запись не найдена", 404)
         entries[name] = password
 
-    return await vault.for_config(active_config.get()).change(request.cookies.get(VAULT_COOKIE), update)
+    vault_id, vault = bound_vault(request)
+    return await vault.change(request.cookies.get(cookie_name(vault_id)), update)
 
 
 @app.delete("/api/vault/entries")
@@ -516,7 +646,9 @@ async def delete_vault_entry(request: Request):
         if name not in entries:
             error("Запись не найдена", 404)
         try:
-            used_by = list(vault_references(config_profiles().values(), name))
+            catalog = vaults.read()
+            configs = [path for path in config_profiles().values() if vaults.selected(path, catalog) == vault_id]
+            used_by = list(vault_references(configs, name))
         except (OSError, ValueError, RuntimeError):
             error("Не удалось проверить ссылки на запись во всех конфигурациях", 409)
         if used_by:
@@ -524,7 +656,8 @@ async def delete_vault_entry(request: Request):
         del entries[name]
 
     async with config_lock:
-        return await vault.for_config(active_config.get()).change(request.cookies.get(VAULT_COOKIE), update)
+        vault_id, vault = bound_vault(request)
+        return await vault.change(request.cookies.get(cookie_name(vault_id)), update)
 
 
 @app.post("/api/vault/rotate")
@@ -533,16 +666,19 @@ async def rotate_vault_password(request: Request):
     password = master_password(body.get("password"))
     if body.get("password") != body.get("confirmation"):
         error("Мастер-пароли не совпадают")
-    return await vault.for_config(active_config.get()).change(request.cookies.get(VAULT_COOKIE), lambda entries: None, password=password)
+    vault_id, vault = bound_vault(request)
+    return await vault.change(request.cookies.get(cookie_name(vault_id)), lambda entries: None, password=password)
 
 
 @app.get("/api/vault/backup")
 async def encrypted_vault_backup(request: Request):
+    vault_id, vault = bound_vault(request)
     encrypted = vault.read(vault.path())
-    if vault.lease(request.cookies.get(VAULT_COOKIE), encrypted) is None:
+    if vault.lease(request.cookies.get(cookie_name(vault_id)), encrypted) is None:
         error("Разблокируйте хранилище mssh", 423)
+    filename = vault.file.name if vault_id != SHARED and vault.file else "vault.json"
     return Response(encrypted, media_type="application/json", headers={
-        "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="vault.json"',
+        "Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{filename}"',
     })
 
 
@@ -551,7 +687,7 @@ async def probe(target: str, request: Request):
     model = public_model(config_text())
     if target not in model["nodes"]:
         error("Неизвестный хост", 404)
-    access = vault_access(request, model, target)
+    access = vault_access(request, model, (target, ""))
     code, out, err = await cli_run("--config", str(active_config.get()), "--json", "status", target, timeout=90, access=access)
     if not out.strip():
         error(err.strip() or "Нет ответа от CLI", 502)
@@ -586,7 +722,7 @@ async def remote_files(request: Request, host: str, route: str = "", path: str =
     model = public_model(config_text())
     if not selected_routes(model, host, route):
         error("Неизвестный хост или маршрут")
-    access = vault_access(request, model, host, route)
+    access = vault_access(request, model, (host, route))
     args = ["--config", str(active_config.get())]
     if route:
         args += ["--route", route]
@@ -639,9 +775,10 @@ def terminal_route_hosts(model, target, route):
 
 
 class TerminalSession:
-    def __init__(self, target: str, route: str, warnings: list[dict[str, Any]]):
+    def __init__(self, target: str, route: str, warnings: list[dict[str, Any]], vault_id: str):
         self.id = uuid.uuid4().hex
         self.config = active_config.get()
+        self.vault_id = vault_id
         self.target = target
         self.route = route
         self.state = "connecting"
@@ -686,7 +823,7 @@ class TerminalSession:
                 except Exception:
                     self.clients.discard(client)
 
-    async def start(self, access: VaultAccess | None = None):
+    async def start(self, access: VaultAccess | Path | None = None):
         master, slave = pty.openpty()
         self.master = master
         self.terminating = False
@@ -835,10 +972,11 @@ async def create_session(request: Request):
     model = public_model(config_text())
     if target not in model["nodes"] or route and not any(r["name"] == route and r["target"] == target and not r.get("disabled") for r in model["routes"]):
         error("Неизвестный хост или маршрут")
-    access = vault_access(request, model, target, route)
+    binding = bound_vault(request)
+    access = vault_access(request, model, (target, route), binding=binding)
     hops = terminal_route_hosts(model, target, route)
     warnings = [{"node": node, "kind": "unpinned", "fingerprint": None} for node in sorted(hops) if not model["nodes"][node].get("host_key")]
-    session = TerminalSession(target, route, warnings)
+    session = TerminalSession(target, route, warnings, binding[0])
     try:
         await session.start(access)
     except Exception as exc:
@@ -909,11 +1047,12 @@ async def reconnect_session(session_id: str, request: Request):
         error("Сессия не найдена", 404)
     async with session.reconnect_lock:
         running = session.process and session.process.returncode is None and session.master >= 0
-        if running and not session.reload_config:
+        binding = bound_vault(request)
+        if running and not session.reload_config and session.vault_id == binding[0]:
             os.write(session.master, b"\x1d")
             return session.summary()
         model = public_model(config_text())
-        access = vault_access(request, model, session.target, session.route)
+        access = vault_access(request, model, (session.target, session.route), binding=binding)
         await session.stop()
         session.history.clear()
         session.host_keys.clear()
@@ -923,6 +1062,7 @@ async def reconnect_session(session_id: str, request: Request):
                             for node in hops if not model["nodes"][node].get("host_key")}
         session.reload_config = False
         await session.start(access)
+        session.vault_id = binding[0]
     return session.summary()
 
 
@@ -1043,8 +1183,7 @@ async def create_transfer(request: Request):
         error("Источник и назначение совпадают")
     remote_copy = bool(source["host"] and destination["host"])
     remotes, routes = copy_routes(model, source, destination)
-    accesses = [vault_access(request, model, end["host"], end["route"]) for end in remotes]
-    access = next((lease for lease in accesses if lease is not None), None)
+    access = vault_access(request, model, *((end["host"], end["route"]) for end in remotes))
     recursive, verify = bool(body.get("recursive")), bool(body.get("verify"))
     item = {"id": uuid.uuid4().hex, "config": active_config.get().name, "source": source, "destination": destination, "recursive": recursive,
             "verify": verify, "state": "queued", "created": time.time(), "logs": deque(maxlen=100)}
@@ -1071,7 +1210,7 @@ async def create_transfer(request: Request):
     return transfer_public(item)
 
 
-async def run_transfer(item, args, access: VaultAccess | None):
+async def run_transfer(item, args, access: VaultAccess | Path | None):
     if item["state"] == "cancelled":
         return
     item["state"] = "running"

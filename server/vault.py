@@ -93,7 +93,10 @@ class VaultAccess:
     encrypted: bytes = field(repr=False)
 
 
-async def spawn_cli(cli: str, args, *, vault: VaultAccess | None = None, start_new_session=False, **kwargs):
+async def spawn_cli(cli: str, args, *, vault: VaultAccess | Path | None = None, start_new_session=False, **kwargs):
+    if isinstance(vault, Path):
+        args = ("--vault-file", str(vault), *args)
+        vault = None
     if vault is None:
         return await asyncio.create_subprocess_exec(cli, *args, start_new_session=start_new_session, **kwargs)
     # Keep the encrypted version stable if another request edits or rotates the vault.
