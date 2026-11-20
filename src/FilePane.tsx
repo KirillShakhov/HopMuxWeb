@@ -1,6 +1,7 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowUp, ChevronRight, Download, File, Folder, RefreshCw, Upload } from 'lucide-react';
-import { api, type FileEndpoint, type Model } from './lib';
+import { type FileEndpoint, type Model } from './lib';
 import { useVault } from './VaultView';
 
 type FileEntry = { name: string; directory: boolean; size: number | null };
@@ -11,6 +12,7 @@ export function fileChild(path: string, name: string) {
 }
 
 export function useFilePane(initialHost = '', initialRoute = '', enabled = true) {
+  const { api } = useConfiguration();
   const { request } = useVault();
   const [location, setLocation] = useState<FileEndpoint>({ host: initialHost, route: initialRoute, path: '.' });
   const [directory, setDirectory] = useState<Directory>();
@@ -42,7 +44,7 @@ export function useFilePane(initialHost = '', initialRoute = '', enabled = true)
       })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [enabled, host, route, path, request, revision]);
+  }, [api, enabled, host, route, path, request, revision]);
 
   const change = (next: FileEndpoint) => {
     setDirectory(undefined);
@@ -68,6 +70,7 @@ type Props = {
 };
 
 export function FilePane({ title, model, pane }: Props) {
+  const { api } = useConfiguration();
   const { endpoint, directory, selected } = pane;
   const { host, route, path } = endpoint;
   const routes = model?.routes.filter(item => item.target === host && !item.disabled) ?? [];

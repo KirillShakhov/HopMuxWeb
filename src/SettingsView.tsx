@@ -1,12 +1,23 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useEffect, useState } from 'react';
-import { Check, Monitor, Shield, Terminal } from 'lucide-react';
-import { api, themes, type UiSettings } from './lib';
+import { Check, GitBranch, Monitor, Plus, RefreshCw, Shield, Terminal } from 'lucide-react';
+import { themes, type UiSettings } from './lib';
 
-type Props = { settings: UiSettings; setSettings: React.Dispatch<React.SetStateAction<UiSettings>> };
+type Props = {
+  settings: UiSettings;
+  setSettings: React.Dispatch<React.SetStateAction<UiSettings>>;
+  configurations: string[];
+  configurationError: string;
+  enabledConfigurations: string[];
+  onToggleConfiguration: (name: string) => void;
+  onRefreshConfigurations: () => void;
+  onCreateConfiguration: () => void;
+};
 
-export function SettingsView({ settings, setSettings }: Props) {
+export function SettingsView({ settings, setSettings, configurations, configurationError, enabledConfigurations, onToggleConfiguration, onRefreshConfigurations, onCreateConfiguration }: Props) {
+  const { api } = useConfiguration();
   const [about, setAbout] = useState<{ ui: string; backend: string; cli: string } | null>(null);
-  useEffect(() => { api<typeof about>('/about').then(setAbout).catch(() => {}); }, []);
+  useEffect(() => { api<typeof about>('/about').then(setAbout).catch(() => {}); }, [api]);
   const update = <K extends keyof UiSettings>(key: K, value: UiSettings[K]) => setSettings(previous => ({ ...previous, [key]: value }));
 
   return <div className="page settings-page">
@@ -29,6 +40,21 @@ export function SettingsView({ settings, setSettings }: Props) {
             <option value="comfortable">Обычная</option><option value="compact">Компактная</option>
           </select>
         </label>
+      </section>
+      <section className="card settings-card">
+        <h2><GitBranch size={18}/> Конфигурации</h2>
+        {configurations.map(name => {
+          const enabled = enabledConfigurations.includes(name);
+          return <label key={name} className="settings-check">
+            <input type="checkbox" checked={enabled} disabled={enabled && enabledConfigurations.length === 1} onChange={() => onToggleConfiguration(name)}/>
+            <span className="configuration-filename">{name}</span>
+          </label>;
+        })}
+        {configurationError && <p className="error-box" role="alert">{configurationError}</p>}
+        <div className="title-actions">
+          <button className="primary" onClick={onCreateConfiguration}><Plus size={16}/> Создать конфигурацию</button>
+          <button className="subtle" onClick={onRefreshConfigurations}><RefreshCw size={16}/> Обновить список</button>
+        </div>
       </section>
       <section className="card settings-card">
         <h2><Terminal size={18}/> Терминал</h2>

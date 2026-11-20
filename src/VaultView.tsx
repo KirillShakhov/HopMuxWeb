@@ -1,6 +1,7 @@
+import { useConfiguration } from './ConfigurationContext';
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Download, KeyRound, LockKeyhole, Pencil, Plus, Trash2 } from 'lucide-react';
-import { api, ApiError, json, type Model } from './lib';
+import { ApiError, json, type Model } from './lib';
 import './vault.css';
 
 type VaultStatus = { exists: boolean; unlocked: boolean; entries: string[] };
@@ -20,10 +21,12 @@ export function useVault() {
 }
 
 export function VaultProvider({ children }: { children: ReactNode }) {
+  const { api } = useConfiguration();
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [asking, setAsking] = useState(false);
   const pending = useRef<{ result: Promise<boolean>; resolve: (accepted: boolean) => void } | null>(null);
-  const refresh = useCallback(async () => { setStatus(await api<VaultStatus>('/vault')); }, []);
+  const refresh = useCallback(async () => { setStatus(await api<VaultStatus>('/vault')); }, [api]);
+  useEffect(() => () => pending.current?.resolve(false), []);
 
   const request = useCallback(async <T,>(action: () => Promise<T>) => {
     try {
@@ -70,6 +73,7 @@ function MasterPasswordForm({ action, onSuccess, onCancel, onBusyChange }: {
   onCancel?: () => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
+  const { api } = useConfiguration();
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [fault, setFault] = useState('');
@@ -105,6 +109,7 @@ function MasterPasswordForm({ action, onSuccess, onCancel, onBusyChange }: {
 }
 
 export function VaultView({ model, onError }: { model: Model | null; onError: (error: unknown) => void }) {
+  const { api, url } = useConfiguration();
   const { status, setStatus, refresh } = useVault();
   const [name, setName] = useState('');
   const [entryPassword, setEntryPassword] = useState('');
@@ -140,7 +145,7 @@ export function VaultView({ model, onError }: { model: Model | null; onError: (e
     <div className="page-title">
       <div><h1>Хранилище</h1><p>Пароли SSH в зашифрованном vault mssh.</p></div>
       {status?.unlocked && <div className="title-actions">
-        <a className="subtle" href="/api/vault/backup"><Download size={16}/> Скачать vault.json</a>
+        <a className="subtle" href={url('/api/vault/backup')}><Download size={16}/> Скачать vault.json</a>
         <button className="subtle" disabled={busy} onClick={() => change(() => api('/vault/lock', { method: 'POST' }))}><LockKeyhole size={16}/> Заблокировать</button>
       </div>}
     </div>

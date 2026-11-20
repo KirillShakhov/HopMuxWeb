@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Link, matchPath, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { AlertCircle, ArrowRight, ArrowUpFromLine, ChevronDown, Columns2, GitBranch, HardDrive, LayoutGrid, LockKeyhole, Maximize2, Minus, Moon, Plus, RefreshCw, Rows2, Settings2, Sparkles, Sun, Terminal, X } from 'lucide-react';
@@ -6,9 +6,11 @@ import { ApiError, api, defaultSettings, initialLayout, isResumableSession, json
 import { TerminalView } from './TerminalView';
 import { HostsView } from './HostsView';
 import { ConfigView } from './ConfigView';
+import { NewConfigurationDialog } from './NewConfigurationDialog';
 import { TransferView } from './TransferView';
 import { SettingsView } from './SettingsView';
-import { useVault, VaultView } from './VaultView';
+import { useVault, VaultProvider, VaultView } from './VaultView';
+import { ConfigurationContext, configurationScope, configurationUrl, useConfiguration, type ConfigurationCatalog } from './ConfigurationContext';
 
 const navItems = [
   ['/', LayoutGrid, 'Рабочее место'],
@@ -18,7 +20,122 @@ const navItems = [
   ['/settings', Settings2, 'Настройки'],
 ] as const;
 
+type WorkspaceSnapshot = { tabs: Tab[]; layout: Layout };
+
+type WorkspaceProps = {
+  catalog: ConfigurationCatalog;
+  catalogError: string;
+  workspaceCache: Map<string, WorkspaceSnapshot>;
+  enabled: string[];
+  selectConfiguration: (name: string) => void;
+  toggleConfiguration: (name: string) => void;
+  refreshConfigurations: () => void;
+  openNewConfiguration: () => void;
+  onConfigDirty: (dirty: boolean) => void;
+};
+
 export function App() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const [authorized, setAuthorized] = useState<boolean | null>(null);
+  const [token, setToken] = useState('');
+  const [notice, setNotice] = useState('');
+  const [catalog, setCatalog] = useState<ConfigurationCatalog>();
+  const [creatingConfiguration, setCreatingConfiguration] = useState(false);
+  const [hidden, setHidden] = useState<string[]>(() => stored('hopmux-hidden-configs', []));
+  const [preferred, setPreferred] = useState(() => stored<string>('hopmux-active-config', ''));
+  const workspaceCache = useRef(new Map<string, WorkspaceSnapshot>());
+  const catalogRevision = useRef(0);
+  const dirty = useRef(false);
+  const onConfigDirty = useCallback((value: boolean) => { dirty.current = value; }, []);
+  const refreshConfigurations = useCallback(() => {
+    const revision = ++catalogRevision.current;
+    api<ConfigurationCatalog>('/configurations').then(result => {
+      if (revision !== catalogRevision.current) return;
+      setCatalog(result);
+      setNotice('');
+    }).catch(error => {
+      if (revision === catalogRevision.current) setNotice(error.message);
+    });
+  }, []);
+  useEffect(() => { api<{ authenticated: boolean }>('/auth').then(result => setAuthorized(result.authenticated)).catch(() => setAuthorized(false)); }, []);
+  useEffect(() => { if (authorized) refreshConfigurations(); }, [authorized, refreshConfigurations]);
+
+  const available = catalog?.files ?? [];
+  const visible = available.filter(name => !hidden.includes(name));
+  const enabled = visible.length ? visible : available.slice(0, 1);
+  const explicit = params.get('config');
+  const detached = pathname === '/' && Boolean(params.get('session') || params.get('transfer'));
+  const fallback = enabled.includes(preferred) ? preferred : enabled.includes(catalog?.default ?? '') ? catalog?.default : enabled[0];
+  const selected = explicit ?? (detached ? catalog?.legacy : fallback);
+  const config = selected && available.includes(selected) ? selected : '';
+  const scope = useMemo(() => configurationScope(config, catalog?.legacy ?? ''), [config, catalog?.legacy]);
+
+  const selectConfiguration = (name: string) => {
+    if (name === config) return;
+    if (dirty.current && !confirm('Переключить конфигурацию и сбросить несохранённые изменения?')) return;
+    localStorage.setItem('hopmux-active-config', JSON.stringify(name));
+    setPreferred(name);
+    navigate(configurationUrl(pathname, name), { replace: true });
+  };
+
+  const toggleConfiguration = (name: string) => {
+    const next = enabled.includes(name) ? enabled.filter(item => item !== name) : [...enabled, name];
+    if (!next.length) return;
+    const hiddenFiles = available.filter(item => !next.includes(item));
+    setHidden(hiddenFiles);
+    localStorage.setItem('hopmux-hidden-configs', JSON.stringify(hiddenFiles));
+    if (!next.includes(config)) selectConfiguration(next[0]);
+  };
+
+  const openNewConfiguration = () => {
+    if (dirty.current && !confirm('После создания откроется новая конфигурация. Сбросить несохранённые изменения?')) return;
+    setCreatingConfiguration(true);
+  };
+
+  const createConfiguration = async (name: string) => {
+    const result = await api<{ name: string; catalog: ConfigurationCatalog }>('/configurations', json('POST', { name }));
+    catalogRevision.current++;
+    setCatalog(result.catalog);
+    setNotice('');
+    const hiddenFiles = hidden.filter(name => name !== result.name);
+    setHidden(hiddenFiles);
+    localStorage.setItem('hopmux-hidden-configs', JSON.stringify(hiddenFiles));
+    setPreferred(result.name);
+    localStorage.setItem('hopmux-active-config', JSON.stringify(result.name));
+    navigate(configurationUrl('/config?host=', result.name));
+    setCreatingConfiguration(false);
+  };
+  const creationDialog = creatingConfiguration && <NewConfigurationDialog onCreate={createConfiguration} onClose={() => setCreatingConfiguration(false)}/>;
+
+  if (authorized === null) return <div className="loading">Загрузка HopMuxWeb…</div>;
+  if (!authorized) return <div className="login"><div className="login-card"><div className="brand-mark"><GitBranch size={25}/></div><h1>HopMuxWeb</h1><p>Ваше рабочее место для SSH</p><form onSubmit={async event => { event.preventDefault(); setNotice(''); try { await api('/login', json('POST', { token })); setAuthorized(true); } catch (error) { setNotice(error instanceof Error ? error.message : String(error)); } }}><label htmlFor="access-token">Токен доступа</label><input id="access-token" type="password" value={token} onChange={event => setToken(event.target.value)} autoFocus placeholder="Введите HOPMUX_TOKEN"/><button className="primary" type="submit">Войти</button></form>{notice && <div className="error-box">{notice}</div>}</div></div>;
+  if (!catalog && !notice) return <div className="loading">Загрузка конфигураций…</div>;
+  if (!catalog || !config) return <div className="loading">
+    <section className="card configuration-empty">
+      <p role="alert">{notice || (selected ? 'Конфигурация больше недоступна.' : 'В каталоге конфигураций нет файлов TOML.')}</p>
+      <div className="title-actions">
+        <button className="primary" onClick={openNewConfiguration}>Создать конфигурацию</button>
+        <button className="subtle" onClick={refreshConfigurations}>Обновить список</button>
+      </div>
+      {fallback && <Link to={configurationUrl('/', fallback)} replace>Открыть рабочее место</Link>}
+    </section>
+    {creationDialog}
+  </div>;
+
+  return <>
+    <ConfigurationContext.Provider key={config} value={scope}>
+      <VaultProvider>
+        <Workspace catalog={catalog} catalogError={notice} workspaceCache={workspaceCache.current} enabled={enabled} selectConfiguration={selectConfiguration} toggleConfiguration={toggleConfiguration} refreshConfigurations={refreshConfigurations} openNewConfiguration={openNewConfiguration} onConfigDirty={onConfigDirty}/>
+      </VaultProvider>
+    </ConfigurationContext.Provider>
+    {creationDialog}
+  </>;
+}
+
+function Workspace({ catalog, catalogError, workspaceCache, enabled, selectConfiguration, toggleConfiguration, refreshConfigurations, openNewConfiguration, onConfigDirty }: WorkspaceProps) {
+  const { api, url, config, storageKey } = useConfiguration();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -29,17 +146,16 @@ export function App() {
   const singleSession = section === '/' ? params.get('session') : null;
   const singleTransfer = section === '/' ? params.get('transfer') : null;
   const { refresh: refreshVault, request: vaultRequest } = useVault();
-  const [authorized, setAuthorized] = useState<boolean | null>(null);
-  const [token, setToken] = useState('');
   const [model, setModel] = useState<Model | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const sessionListVersion = useRef(0);
   const sessionActions = useRef(new Set<string>());
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [settings, setSettings] = useState<UiSettings>(() => ({ ...defaultSettings, ...stored('hopmux-settings', {}) }));
-  const [tabs, setTabs] = useState<Tab[]>(() => stored<UiSettings>('hopmux-settings', defaultSettings).restoreTabs ? stored('hopmux-tabs', []) : []);
-  const [layout, setLayout] = useState<Layout>(() => stored<UiSettings>('hopmux-settings', defaultSettings).restoreTabs ? { ...initialLayout, ...stored('hopmux-layout', initialLayout) } : initialLayout);
+  const [tabs, setTabs] = useState<Tab[]>(() => workspaceCache.get(config)?.tabs ?? (settings.restoreTabs ? stored(storageKey('hopmux-tabs'), []) : []));
+  const [layout, setLayout] = useState<Layout>(() => workspaceCache.get(config)?.layout ?? (settings.restoreTabs ? { ...initialLayout, ...stored(storageKey('hopmux-layout'), initialLayout) } : initialLayout));
   const [notice, setNotice] = useState('');
+  const mounted = useRef(false);
   const showError = (error: unknown) => {
     if (!(error instanceof DOMException && error.name === 'AbortError')) {
       setNotice(error instanceof Error ? error.message : String(error));
@@ -59,19 +175,24 @@ export function App() {
   const createTerminalSession = (target: string, route: string) =>
     vaultRequest(() => api<Session>('/sessions', json('POST', { target, route })));
 
-  useEffect(() => { api<{ authenticated: boolean }>('/auth').then(result => setAuthorized(result.authenticated)).catch(() => setAuthorized(false)); }, []);
-  useEffect(() => { if (authorized) reload().catch(showError); }, [authorized]);
-  useEffect(() => { if (authorized) refreshVault().catch(() => {}); }, [authorized, refreshVault]);
   useEffect(() => {
-    if (!authorized) return;
+    mounted.current = true;
+    reload().catch(showError);
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => { refreshVault().catch(() => {}); }, [refreshVault]);
+  useEffect(() => {
     const timer = window.setInterval(() => {
       reloadSessions().catch(() => {});
       api<Transfer[]>('/transfers').then(setTransfers).catch(() => {});
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [authorized]);
-  useEffect(() => { localStorage.setItem('hopmux-tabs', JSON.stringify(tabs)); }, [tabs]);
-  useEffect(() => { localStorage.setItem('hopmux-layout', JSON.stringify(layout)); }, [layout]);
+  }, []);
+  useEffect(() => {
+    workspaceCache.set(config, { tabs, layout });
+    localStorage.setItem(storageKey('hopmux-tabs'), JSON.stringify(tabs));
+    localStorage.setItem(storageKey('hopmux-layout'), JSON.stringify(layout));
+  }, [config, layout, storageKey, tabs, workspaceCache]);
   useEffect(() => {
     localStorage.setItem('hopmux-settings', JSON.stringify(settings));
     document.documentElement.dataset.theme = settings.theme;
@@ -91,7 +212,7 @@ export function App() {
       panels[index].push(tab.id);
       return { ...previous, panels, active: { ...previous.active, [index]: tab.id } };
     });
-    if (section !== '/') navigate('/');
+    if (mounted.current && section !== '/') navigate(url('/'));
   };
   const showTerminalSession = (session: Session, panelIndex = 0) => {
     const tab = tabs.find(item => item.sessionId === session.id);
@@ -102,7 +223,7 @@ export function App() {
         active: { ...previous.active, [index]: tab.id },
         maximized: previous.maximized === null ? null : index,
       }));
-      if (section !== '/') navigate('/');
+      if (mounted.current && section !== '/') navigate(url('/'));
       return;
     }
     openTab({ id: crypto.randomUUID(), kind: 'terminal', title: session.target, target: session.target, route: session.route, sessionId: session.id }, panelIndex);
@@ -129,7 +250,7 @@ export function App() {
         setTabs(previous => previous.map(tab => tab.sessionId === id
           ? { ...tab, sessionId: session.id, target: session.target, route: session.route }
           : tab));
-        if (separate) navigate(terminalWindowUrl(session.id, session.target, session.route), { replace: true });
+        if (mounted.current && separate) navigate(url(terminalWindowUrl(session.id, session.target, session.route)), { replace: true });
       }
     } finally {
       sessionActions.current.delete(id);
@@ -201,13 +322,12 @@ export function App() {
     removeTab(id);
   };
   const editConfig = (host = '', replace = false) =>
-    navigate({ pathname: '/config', search: new URLSearchParams({ host }).toString() }, { replace });
+    navigate(url('/config?' + new URLSearchParams({ host })), { replace });
   const browseHosts = (host = '') =>
-    navigate({ pathname: '/hosts', search: host ? new URLSearchParams({ host }).toString() : '' });
-  const leaveSingle = () => navigate('/', { replace: true });
+    navigate(url(host ? '/hosts?' + new URLSearchParams({ host }) : '/hosts'));
+  const leaveSingle = () => navigate(url('/'), { replace: true });
 
-  if (authorized === null) return <div className="loading">Загрузка HopMuxWeb…</div>;
-  if (!authorized) return <div className="login"><div className="login-card"><div className="brand-mark"><GitBranch size={25}/></div><h1>HopMuxWeb</h1><p>Ваше рабочее место для SSH</p><form onSubmit={async event => { event.preventDefault(); try { await api('/login', json('POST', { token })); setAuthorized(true); } catch (error) { showError(error); } }}><label htmlFor="access-token">Токен доступа</label><input id="access-token" type="password" value={token} onChange={event => setToken(event.target.value)} autoFocus placeholder="Введите HOPMUX_TOKEN"/><button className="primary" type="submit">Войти</button></form>{notice && <div className="error-box">{notice}</div>}</div></div>;
+
   if (singleSession) {
     const session = sessions.find(item => item.id === singleSession);
     const tab = tabs.find(item => item.sessionId === singleSession);
@@ -226,9 +346,9 @@ export function App() {
   const resumableSessions = sessions.filter(session => isResumableSession(session) && !tabSessionIds.has(session.id));
   const connectableHosts = new Set(model?.routes.filter(route => !route.disabled).map(route => route.target));
   const canConnect = (name: string) => Boolean(model?.nodes[name] && connectableHosts.has(name));
-  const favoriteHosts = stored<string[]>('hopmux-favorites', []).filter(canConnect);
+  const favoriteHosts = stored<string[]>(storageKey('hopmux-favorites'), []).filter(canConnect);
   const quickHosts = favoriteHosts.length ? favoriteHosts : [...new Set([
-    ...stored<string[]>('hopmux-recent', []),
+    ...stored<string[]>(storageKey('hopmux-recent'), []),
     ...Object.keys(model?.nodes || {}).sort(),
   ])].filter(canConnect).slice(0, 3);
   const activeSessions = sessions.filter(item => item.state === 'connected').length;
@@ -243,7 +363,7 @@ export function App() {
       <nav aria-label="Основные разделы">
         {navItems.map(([path, Icon, label]) => <Link
           key={path}
-          to={path}
+          to={url(path)}
           className={section === path ? 'nav active' : 'nav'}
           aria-current={section === path ? 'page' : undefined}
           title={label}
@@ -259,6 +379,14 @@ export function App() {
       <header className="topbar">
         <div className="breadcrumb"><span>HopMuxWeb</span><span aria-hidden="true">/</span><strong>{currentSection?.[2] ?? 'Страница не найдена'}</strong></div>
         <div className="top-actions">
+          <label className="theme-select configuration-select" title="Конфигурация">
+            <GitBranch size={16} aria-hidden="true"/>
+            <select aria-label="Активная конфигурация" value={config} onChange={event => selectConfiguration(event.target.value)}>
+              {!enabled.includes(config) && <option value={config} hidden>{config}</option>}
+              {enabled.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+            <ChevronDown size={13} aria-hidden="true"/>
+          </label>
           <button className="icon-button" title="Обновить данные" aria-label="Обновить данные" onClick={() => reload().catch(showError)}><RefreshCw size={17}/></button>
           <div className="theme-select">
             <ThemeIcon size={16} aria-hidden="true"/>
@@ -362,10 +490,10 @@ export function App() {
         </div>
       </div>}
       {section === '/hosts' && <HostsView model={model} sessions={sessions} selectedHost={hostToView} onSelectHost={browseHosts} openTerminal={openTerminal} onResumeSession={showTerminalSession} openTransfer={openTransfer} onEdit={editConfig} onError={showError}/>}
-      {section === '/config' && <ConfigView model={model} theme={settings.theme} focusHost={focusHost} onSaved={setModel} openTerminal={openTerminal} openTransfer={openTransfer} onError={showError}/>}
+      {section === '/config' && <ConfigView onCreateConfiguration={openNewConfiguration} onDirty={onConfigDirty} model={model} theme={settings.theme} focusHost={focusHost} onSaved={setModel} openTerminal={openTerminal} openTransfer={openTransfer} onError={showError}/>}
       {section === '/vault' && <VaultView model={model} onError={showError}/>}
-      {section === '/settings' && <SettingsView settings={settings} setSettings={setSettings}/>}
-      {!section && <div className="page"><div className="page-title"><h1>Страница не найдена</h1></div><Link to="/" replace>Вернуться на рабочее место</Link></div>}
+      {section === '/settings' && <SettingsView settings={settings} setSettings={setSettings} configurations={catalog.files} configurationError={catalogError} enabledConfigurations={enabled} onToggleConfiguration={toggleConfiguration} onRefreshConfigurations={refreshConfigurations} onCreateConfiguration={openNewConfiguration}/>}
+      {!section && <div className="page"><div className="page-title"><h1>Страница не найдена</h1></div><Link to={url('/')} replace>Вернуться на рабочее место</Link></div>}
     </main>
   </div>;
 }

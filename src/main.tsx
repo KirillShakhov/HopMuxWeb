@@ -7,12 +7,11 @@ import './theme.css';
 import './style.css';
 import './graph.css';
 import { App } from './App';
-import { VaultProvider } from './VaultView';
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
-      <VaultProvider><App /></VaultProvider>
+      <App />
     </BrowserRouter>
   </React.StrictMode>,
 );

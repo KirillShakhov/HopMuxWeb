@@ -1,6 +1,7 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowUpFromLine, GitBranch, HardDrive, Plus, Search, Star, Terminal } from 'lucide-react';
-import { api, isResumableSession, routeLabel, sessionLabel, stateLabel, stored, type Model, type Session } from './lib';
+import { isResumableSession, routeLabel, sessionLabel, stateLabel, stored, type Model, type Session } from './lib';
 import { useVault } from './VaultView';
 
 type Props = {
@@ -16,18 +17,19 @@ type Props = {
 };
 
 export function HostsView({ model, sessions, selectedHost, onSelectHost, openTerminal, onResumeSession, openTransfer, onEdit, onError }: Props) {
+  const { api, storageKey } = useConfiguration();
   const { request: vaultRequest } = useVault();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'favorites' | 'recent'>('all');
-  const [favorites, setFavorites] = useState<string[]>(() => stored('hopmux-favorites', []));
-  const [recent, setRecent] = useState<string[]>(() => stored('hopmux-recent', []));
+  const [favorites, setFavorites] = useState<string[]>(() => stored(storageKey('hopmux-favorites'), []));
+  const [recent, setRecent] = useState<string[]>(() => stored(storageKey('hopmux-recent'), []));
   const selected = selectedHost || Object.keys(model?.nodes || {}).sort()[0] || '';
   const [selectedRoute, setSelectedRoute] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState('');
   const [probe, setProbe] = useState<Record<string, 'checking' | 'up' | 'down' | 'error'>>({});
 
-  useEffect(() => { localStorage.setItem('hopmux-favorites', JSON.stringify(favorites)); }, [favorites]);
-  useEffect(() => { localStorage.setItem('hopmux-recent', JSON.stringify(recent)); }, [recent]);
+  useEffect(() => { localStorage.setItem(storageKey('hopmux-favorites'), JSON.stringify(favorites)); }, [favorites]);
+  useEffect(() => { localStorage.setItem(storageKey('hopmux-recent'), JSON.stringify(recent)); }, [recent]);
   useEffect(() => { setSelectedRoute(''); }, [selected]);
 
   const hosts = useMemo(() => Object.entries(model?.nodes || {})

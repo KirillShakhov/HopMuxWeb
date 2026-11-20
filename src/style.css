@@ -124,6 +124,14 @@ code, pre { font-family: var(--mono); }
 .theme-select svg { position: absolute; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .theme-select svg:first-child { left: 10px; }
 .theme-select svg:last-child { right: 8px; }
+.configuration-select select { max-width: clamp(110px, 22vw, 260px); text-overflow: ellipsis; }
+.configuration-filename { overflow-wrap: anywhere; }
+.configuration-empty { display: grid; gap: 14px; padding: 20px; }
+.configuration-dialog { width: min(420px, calc(100vw - 28px)); padding: 20px; color: var(--ink); }
+.configuration-dialog::backdrop { background: #10152777; }
+.configuration-dialog form { display: grid; gap: 12px; margin-top: 12px; }
+.configuration-dialog input { width: 100%; min-height: var(--control-height); padding: 6px 9px; border: 1px solid var(--line-control); border-radius: var(--control-radius); background: var(--surface); color: var(--ink); }
+.configuration-dialog .form-actions { margin-top: 0; }
 
 .page { flex: 1; min-height: 0; overflow: auto; padding: 30px var(--gutter) var(--gutter); }
 .page-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }

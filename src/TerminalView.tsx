@@ -1,8 +1,9 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { AlertTriangle, ExternalLink, Minus, RefreshCw, Square, Terminal } from 'lucide-react';
-import { api, json, stateLabel, terminalWindowUrl, type HostKeyWarning, type Model, type Session, type Theme, type UiSettings } from './lib';
+import { json, stateLabel, terminalWindowUrl, type HostKeyWarning, type Model, type Session, type Theme, type UiSettings } from './lib';
 
 const lightAnsi = {
   black: '#242638', red: '#a82936', green: '#087345', yellow: '#805900',
@@ -32,6 +33,7 @@ type Props = {
 };
 
 export function TerminalView({ sessionId, session, target, route, settings, onReconnect, onTerminate, onDetach, onEditConfig, onConfigSaved, onError }: Props) {
+  const { api, url } = useConfiguration();
   const root = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<XTerminal | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -68,7 +70,7 @@ export function TerminalView({ sessionId, session, target, route, settings, onRe
     terminal.loadAddon(fit);
     terminal.open(root.current);
     terminalRef.current = terminal;
-    const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/terminal/${sessionId}`);
+    const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${url('/ws/terminal/' + sessionId)}`);
     socketRef.current = socket;
     socket.binaryType = 'arraybuffer';
     let ownsInput = false;
@@ -131,7 +133,7 @@ export function TerminalView({ sessionId, session, target, route, settings, onRe
       terminal.dispose();
       terminalRef.current = null;
     };
-  }, [sessionId, settings.fontSize, settings.scrollback, socketAttempt]);
+  }, [sessionId, settings.fontSize, settings.scrollback, socketAttempt, url]);
 
   useEffect(() => {
     if (terminalRef.current) terminalRef.current.options.theme = colors;
@@ -181,7 +183,7 @@ export function TerminalView({ sessionId, session, target, route, settings, onRe
           if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(JSON.stringify({ type: 'claim' }));
         }}>Взять ввод</button>}
         <button title="Переподключить SSH" aria-label="Переподключить" disabled={savingKey || reconnecting} onClick={retryConnection}><RefreshCw size={16}/></button>
-        <button title="Открыть эту же сессию в новом окне" aria-label="В новое окно" onClick={() => window.open(terminalWindowUrl(sessionId, session?.target || target, session?.route ?? route), '_blank')}><ExternalLink size={16}/></button>
+        <button title="Открыть эту же сессию в новом окне" aria-label="В новое окно" onClick={() => window.open(url(terminalWindowUrl(sessionId, session?.target || target, session?.route ?? route)), '_blank')}><ExternalLink size={16}/></button>
         <button title="Отсоединиться: SSH-процесс продолжит работу" aria-label="Отсоединиться" disabled={reconnecting} onClick={onDetach}><Minus size={16}/></button>
         <button title="Завершить SSH-процесс" aria-label="Завершить" disabled={!session?.running || reconnecting} onClick={() => onTerminate(sessionId)}><Square size={15}/></button>
       </div>

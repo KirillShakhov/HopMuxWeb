@@ -126,4 +126,39 @@ with TestClient(app) as client:
     assert actual["edge"]["password"] == "last-line-secret"
     assert actual["new_host"]["password_vault"] == "edge-auth"
     assert "last-line-secret" not in saved.text
+
+    lab = config.with_name("lab.toml")
+    fragment = config.with_name("hosts.toml")
+    fragment.write_text('[nodes.extra]\nhost = "extra.test.invalid"\nuser = "alice"\nagent = true\n', encoding="utf-8")
+    lab.write_text('include = ["hosts.toml"]\ndirect_hosts = ["edge"]\n[nodes.edge]\nhost = "lab.test.invalid"\nuser = "alice"\nagent = true\n', encoding="utf-8")
+    assert client.get("/api/configurations").json() == {
+        "files": ["config.toml", "lab.toml"], "default": "config.toml", "legacy": "config.toml",
+    }
+    assert client.get("/api/config", params={"config": "../lab.toml"}).status_code == 404
+    assert client.get("/api/config", params={"config": "hosts.toml"}).status_code == 404
+    original = config.read_text(encoding="utf-8")
+    params = {"config": "lab.toml"}
+    loaded_lab = client.get("/api/config", params=params).json()
+    candidate = loaded_lab["text"].replace("lab.test.invalid", "lab-updated.test.invalid")
+    saved_lab = client.put("/api/config", params=params, json={"text": candidate, "version": loaded_lab["version"]})
+    assert saved_lab.status_code == 200, saved_lab.text
+    assert "lab-updated.test.invalid" in lab.read_text(encoding="utf-8")
+    assert config.read_text(encoding="utf-8") == original
+    assert client.get("/api/vault", params=params).json()["unlocked"]
+    assert client.request("DELETE", "/api/vault/entries", params=params, json={"name": "edge-auth"}).status_code == 409
+
+    assert client.post("/api/configurations", json={"name": "../outside"}).status_code == 400
+    assert client.post("/api/configurations", json={"name": "lab.toml"}).status_code == 409
+    created = client.post("/api/configurations", json={"name": "Новая конфигурация"})
+    assert created.status_code == 201, created.text
+    name = created.json()["name"]
+    assert name == "Новая конфигурация.toml"
+    assert name in created.json()["catalog"]["files"]
+    params = {"config": name}
+    blank = client.get("/api/config", params=params).json()
+    assert blank["nodes"] == {}
+    first_host = '[nodes.first]\nhost = "first.test.invalid"\nuser = "alice"\nagent = true\n'
+    assert client.put("/api/config", params=params, json={"text": first_host, "version": blank["version"]}).status_code == 200
+    assert client.get("/api/config", params=params).json()["nodes"]["first"]["host"] == "first.test.invalid"
+    assert config.read_text(encoding="utf-8") == original
 print("Smoke checks passed")

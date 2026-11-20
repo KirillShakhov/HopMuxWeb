@@ -14,6 +14,7 @@ import uuid
 import fcntl
 import termios
 from collections import deque
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,13 @@ from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile, W
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from .configurations import create_configuration, discover, vault_references
 from .vault import COOKIE as VAULT_COOKIE, LEASE_SECONDS, Vault, VaultAccess, master_password, spawn_cli
 
-CONFIG = Path(os.getenv("HOPMUX_CONFIG", "/config/config.toml"))
+CONFIG_LOCATION = Path(os.getenv("HOPMUX_CONFIG", "/config/config.toml")).absolute()
+CONFIG_DIR = (CONFIG_LOCATION if CONFIG_LOCATION.is_dir() else CONFIG_LOCATION.parent).resolve()
+DEFAULT_CONFIG = CONFIG_DIR / ("config.toml" if CONFIG_LOCATION.is_dir() else CONFIG_LOCATION.name)
+active_config = ContextVar("active_config", default=DEFAULT_CONFIG)
 DATA = Path(os.getenv("HOPMUX_DATA", "/data"))
 FILES = Path(os.getenv("HOPMUX_FILES", "/files"))
 TOKEN = os.getenv("HOPMUX_TOKEN", "")
@@ -39,7 +44,15 @@ transfers: dict[str, dict[str, Any]] = {}
 transfer_processes: dict[str, asyncio.subprocess.Process] = {}
 config_lock = asyncio.Lock()
 HISTORY = DATA / "transfers.json"
-vault = Vault(CLI, CONFIG, Path(os.environ["HOPMUX_VAULT_FILE"]) if os.getenv("HOPMUX_VAULT_FILE") else None)
+vault = Vault(CLI, DEFAULT_CONFIG, Path(os.environ["HOPMUX_VAULT_FILE"]) if os.getenv("HOPMUX_VAULT_FILE") else None)
+
+
+def config_profiles():
+    return discover(CONFIG_DIR, DEFAULT_CONFIG)
+
+
+def default_config(profiles):
+    return profiles.get(DEFAULT_CONFIG.name) or next(iter(profiles.values()), DEFAULT_CONFIG)
 
 
 def save_history():
@@ -90,6 +103,17 @@ async def guard(request: Request, call_next):
             return JSONResponse({"detail": "Войдите в HopMuxWeb"}, status_code=401)
         if request.method not in ("GET", "HEAD") and not same_origin(request.headers):
             return JSONResponse({"detail": "Invalid origin"}, status_code=403)
+        if path not in ("/api/configurations", "/api/logout"):
+            profiles = config_profiles()
+            selected = request.query_params.get("config")
+            config = profiles.get(selected) if selected is not None else default_config(profiles)
+            if config is None:
+                return JSONResponse({"detail": "Конфигурация не найдена"}, status_code=404)
+            scope = active_config.set(config)
+            try:
+                return await call_next(request)
+            finally:
+                active_config.reset(scope)
     return await call_next(request)
 
 
@@ -123,7 +147,7 @@ async def logout(request: Request):
 
 def config_text() -> str:
     try:
-        return CONFIG.read_text(encoding="utf-8")
+        return active_config.get().read_text(encoding="utf-8")
     except OSError as exc:
         error(f"Не удалось прочитать конфиг: {exc}", 500)
 
@@ -238,8 +262,8 @@ async def validate_config(candidate: str):
         tomlkit.parse(candidate)
     except Exception as exc:
         error(f"Ошибка TOML: {exc}")
-    CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix=".hopmux-check-", suffix=".toml", dir=CONFIG.parent)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=".hopmux-check-", suffix=".toml", dir=CONFIG_DIR)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(candidate)
@@ -249,6 +273,29 @@ async def validate_config(candidate: str):
         return out.strip()
     finally:
         Path(temp_name).unlink(missing_ok=True)
+
+
+@app.get("/api/configurations")
+async def list_configurations():
+    profiles = config_profiles()
+    return {"files": list(profiles), "default": default_config(profiles).name, "legacy": DEFAULT_CONFIG.name}
+
+
+@app.post("/api/configurations", status_code=201)
+async def add_configuration(request: Request):
+    try:
+        body = await request.json()
+        async with config_lock:
+            name = create_configuration(CONFIG_DIR, DEFAULT_CONFIG, body.get("name") if isinstance(body, dict) else None)
+            return {"name": name, "catalog": await list_configurations()}
+    except ValueError as exc:
+        error(str(exc) if not isinstance(exc, (UnicodeError, json.JSONDecodeError)) else "Введите корректное имя файла")
+    except FileExistsError as exc:
+        error(str(exc) if exc.errno is None else "Файл конфигурации с таким именем уже существует", 409)
+    except PermissionError:
+        error("Нет доступа на запись в каталог конфигураций", 403)
+    except OSError:
+        error("Не удалось записать файл конфигурации", 500)
 
 
 @app.get("/api/config")
@@ -343,13 +390,14 @@ async def compose_config(request: Request):
 
 
 def write_config(candidate: str):
-    backup = CONFIG.with_suffix(CONFIG.suffix + ".bak")
-    tmp = CONFIG.with_suffix(CONFIG.suffix + ".new")
-    shutil.copy2(CONFIG, backup)
+    config = active_config.get()
+    backup = config.with_suffix(config.suffix + ".bak")
+    tmp = config.with_suffix(config.suffix + ".new")
+    shutil.copy2(config, backup)
     try:
         tmp.write_text(candidate, encoding="utf-8")
-        os.chmod(tmp, CONFIG.stat().st_mode & 0o777)
-        os.replace(tmp, CONFIG)
+        os.chmod(tmp, config.stat().st_mode & 0o777)
+        os.replace(tmp, config)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -383,7 +431,7 @@ async def put_visual(request: Request):
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "cli": CLI, "config_exists": CONFIG.exists()}
+    return {"ok": True, "cli": CLI, "config_exists": active_config.get().exists()}
 
 
 def selected_routes(model, target: str, route: str = ""):
@@ -410,7 +458,7 @@ async def open_vault(request: Request, *, create=False):
     password = master_password(body.get("password"))
     if create and body.get("password") != body.get("confirmation"):
         error("Мастер-пароли не совпадают")
-    token = await vault.unlock(password, create=create)
+    token = await vault.for_config(active_config.get()).unlock(password, create=create)
     vault.leases.pop(request.cookies.get(VAULT_COOKIE), None)
     response = JSONResponse(vault.status(token), headers={"Cache-Control": "no-store"})
     response.set_cookie(VAULT_COOKIE, token, max_age=LEASE_SECONDS, httponly=True,
@@ -457,7 +505,7 @@ async def save_vault_entry(request: Request):
             error("Запись не найдена", 404)
         entries[name] = password
 
-    return await vault.change(request.cookies.get(VAULT_COOKIE), update)
+    return await vault.for_config(active_config.get()).change(request.cookies.get(VAULT_COOKIE), update)
 
 
 @app.delete("/api/vault/entries")
@@ -467,14 +515,16 @@ async def delete_vault_entry(request: Request):
     def update(entries):
         if name not in entries:
             error("Запись не найдена", 404)
-        used_by = [host for host, settings in public_model(config_text())["nodes"].items()
-                   if settings.get("password_vault") == name]
+        try:
+            used_by = list(vault_references(config_profiles().values(), name))
+        except (OSError, ValueError, RuntimeError):
+            error("Не удалось проверить ссылки на запись во всех конфигурациях", 409)
         if used_by:
             error("Запись используется хостами: " + ", ".join(used_by), 409)
         del entries[name]
 
     async with config_lock:
-        return await vault.change(request.cookies.get(VAULT_COOKIE), update)
+        return await vault.for_config(active_config.get()).change(request.cookies.get(VAULT_COOKIE), update)
 
 
 @app.post("/api/vault/rotate")
@@ -483,7 +533,7 @@ async def rotate_vault_password(request: Request):
     password = master_password(body.get("password"))
     if body.get("password") != body.get("confirmation"):
         error("Мастер-пароли не совпадают")
-    return await vault.change(request.cookies.get(VAULT_COOKIE), lambda entries: None, password=password)
+    return await vault.for_config(active_config.get()).change(request.cookies.get(VAULT_COOKIE), lambda entries: None, password=password)
 
 
 @app.get("/api/vault/backup")
@@ -502,7 +552,7 @@ async def probe(target: str, request: Request):
     if target not in model["nodes"]:
         error("Неизвестный хост", 404)
     access = vault_access(request, model, target)
-    code, out, err = await cli_run("--config", str(CONFIG), "--json", "status", target, timeout=90, access=access)
+    code, out, err = await cli_run("--config", str(active_config.get()), "--json", "status", target, timeout=90, access=access)
     if not out.strip():
         error(err.strip() or "Нет ответа от CLI", 502)
     try:
@@ -537,7 +587,7 @@ async def remote_files(request: Request, host: str, route: str = "", path: str =
     if not selected_routes(model, host, route):
         error("Неизвестный хост или маршрут")
     access = vault_access(request, model, host, route)
-    args = ["--config", str(CONFIG)]
+    args = ["--config", str(active_config.get())]
     if route:
         args += ["--route", route]
     code, out, stderr = await cli_run(*args, "--", "ls", host, path, timeout=45, access=access)
@@ -591,6 +641,7 @@ def terminal_route_hosts(model, target, route):
 class TerminalSession:
     def __init__(self, target: str, route: str, warnings: list[dict[str, Any]]):
         self.id = uuid.uuid4().hex
+        self.config = active_config.get()
         self.target = target
         self.route = route
         self.state = "connecting"
@@ -640,7 +691,7 @@ class TerminalSession:
         self.master = master
         self.terminating = False
         await self.set_state("connecting")
-        args = [TERMINAL_CLI, "--debug", "--config", str(CONFIG)]
+        args = [TERMINAL_CLI, "--debug", "--config", str(self.config)]
         if self.route:
             args += ["--route", self.route]
         args.append(self.target)
@@ -766,13 +817,13 @@ class TerminalSession:
 
 @app.get("/api/sessions")
 async def list_sessions():
-    return [session.summary() for session in sessions.values()]
+    return [session.summary() for session in sessions.values() if session.config == active_config.get()]
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     session = sessions.get(session_id)
-    if not session:
+    if not session or session.config != active_config.get():
         error("Сессия не найдена", 404)
     return session.summary()
 
@@ -799,7 +850,7 @@ async def create_session(request: Request):
 @app.put("/api/sessions/{session_id}/host-key")
 async def save_host_key(session_id: str, request: Request):
     session = sessions.get(session_id)
-    if not session:
+    if not session or session.config != active_config.get():
         error("Сессия не найдена", 404)
     body = await request.json()
     if not isinstance(body, dict):
@@ -830,7 +881,8 @@ async def save_host_key(session_id: str, request: Request):
         if not any(item.get("id") == warning["id"] for item in session.host_key_warnings()):
             error("Отпечаток изменился во время проверки", 409)
         write_config(candidate)
-        affected = [item for item in sessions.values() if name in terminal_route_hosts(model, item.target, item.route)]
+        affected = [item for item in sessions.values() if item.config == session.config
+                    and name in terminal_route_hosts(model, item.target, item.route)]
         for item in affected:
             item.updated_keys[name] = warning["fingerprint"]
             item.warnings.pop(name, None)
@@ -843,7 +895,7 @@ async def save_host_key(session_id: str, request: Request):
 @app.delete("/api/sessions/{session_id}")
 async def terminate_session(session_id: str):
     session = sessions.get(session_id)
-    if not session:
+    if not session or session.config != active_config.get():
         error("Сессия не найдена", 404)
     async with session.reconnect_lock:
         await session.stop()
@@ -853,7 +905,7 @@ async def terminate_session(session_id: str):
 @app.post("/api/sessions/{session_id}/reconnect")
 async def reconnect_session(session_id: str, request: Request):
     session = sessions.get(session_id)
-    if not session:
+    if not session or session.config != active_config.get():
         error("Сессия не найдена", 404)
     async with session.reconnect_lock:
         running = session.process and session.process.returncode is None and session.master >= 0
@@ -881,7 +933,10 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
         await websocket.close(code=1008)
         return
     session = sessions.get(session_id)
-    if not session:
+    selected = websocket.query_params.get("config")
+    profiles = config_profiles()
+    config = default_config(profiles) if selected is None else profiles.get(selected)
+    if not session or session.config != config:
         await websocket.close(code=1008)
         return
     await websocket.accept()
@@ -925,7 +980,8 @@ def transfer_public(item):
 
 @app.get("/api/transfers")
 async def list_transfers():
-    return [transfer_public(item) for item in transfers.values()]
+    return [transfer_public(item) for item in transfers.values()
+            if item.get("config", DEFAULT_CONFIG.name) == active_config.get().name]
 
 
 def transfer_endpoints(body):
@@ -990,13 +1046,13 @@ async def create_transfer(request: Request):
     accesses = [vault_access(request, model, end["host"], end["route"]) for end in remotes]
     access = next((lease for lease in accesses if lease is not None), None)
     recursive, verify = bool(body.get("recursive")), bool(body.get("verify"))
-    item = {"id": uuid.uuid4().hex, "source": source, "destination": destination, "recursive": recursive,
+    item = {"id": uuid.uuid4().hex, "config": active_config.get().name, "source": source, "destination": destination, "recursive": recursive,
             "verify": verify, "state": "queued", "created": time.time(), "logs": deque(maxlen=100)}
     if not remote_copy:
         local, remote = (source, destination) if destination["host"] else (destination, source)
         item.update(target=remote["host"], route=remote["route"], remote=remote["path"], local=local["path"],
                     direction="upload" if destination["host"] else "download")
-    args = ["--config", str(CONFIG)]
+    args = ["--config", str(active_config.get())]
     for route in routes:
         args += ["--route", route]
     if recursive:
@@ -1046,7 +1102,7 @@ async def run_transfer(item, args, access: VaultAccess | None):
 @app.post("/api/transfers/{transfer_id}/cancel")
 async def cancel_transfer(transfer_id: str):
     item = transfers.get(transfer_id)
-    if not item:
+    if not item or item.get("config", DEFAULT_CONFIG.name) != active_config.get().name:
         error("Передача не найдена", 404)
     if item["state"] not in ("queued", "running"):
         return transfer_public(item)

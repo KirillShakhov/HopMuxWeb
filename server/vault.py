@@ -9,6 +9,7 @@ import tempfile
 import tomllib
 import tty
 from collections import deque
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -121,6 +122,12 @@ class Vault:
         self.file = file
         self.leases: dict[str, Lease] = {}
         self.lock = asyncio.Lock()
+
+    def for_config(self, config: Path):
+        # The profiles share a directory and vault, including the leases and lock.
+        view = copy(self)
+        view.config = config
+        return view
 
     def path(self):
         if self.file is not None:

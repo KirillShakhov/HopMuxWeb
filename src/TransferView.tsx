@@ -1,7 +1,8 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, ArrowUpFromLine, Download, ExternalLink, File, FolderOpen, RefreshCw, X } from 'lucide-react';
 import { FilePane, fileChild, useFilePane } from './FilePane';
-import { api, json, stateLabel, transferDraft, type FileEndpoint, type Model, type Transfer, type TransferDraft, type UiSettings } from './lib';
+import { json, stateLabel, transferDraft, type FileEndpoint, type Model, type Transfer, type TransferDraft, type UiSettings } from './lib';
 import { useVault } from './VaultView';
 
 type Props = {
@@ -20,6 +21,7 @@ type Props = {
 const endpointLabel = ({ host, path }: FileEndpoint) => host ? host + ':' + path : '/files/' + path;
 
 export function TransferView({ model, transfers, settings, initialTarget = '', initialRoute = '', focusedId, separate = false, onCreated, onRefresh, onError }: Props) {
+  const { api, url } = useConfiguration();
   const { request: vaultRequest } = useVault();
   const left = useFilePane('', '', !separate);
   const right = useFilePane(initialTarget, initialRoute, !separate);
@@ -69,7 +71,7 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
   return <div className="transfer-view">
     <div className="tool-head">
       <div className="tool-identity"><span className="tool-icon"><ArrowUpFromLine size={16}/></span><strong>{separate ? 'Передача файла' : 'Передача файлов'}</strong></div>
-      <div className="tool-actions">{selected && <button title="Открыть эту же операцию в новом окне" aria-label="Открыть операцию в новом окне" onClick={() => window.open('/?transfer=' + selected.id, '_blank')}><ExternalLink size={16}/></button>}</div>
+      <div className="tool-actions">{selected && <button title="Открыть эту же операцию в новом окне" aria-label="Открыть операцию в новом окне" onClick={() => window.open(url('/?transfer=' + selected.id), '_blank')}><ExternalLink size={16}/></button>}</div>
     </div>
     <div className="transfer-scroll">
       {!separate && <div className="file-manager">

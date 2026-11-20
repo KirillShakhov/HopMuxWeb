@@ -1,15 +1,18 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import Editor, { type BeforeMount } from '@monaco-editor/react';
 import { Background, Handle, MarkerType, Panel as FlowPanel, Position, ReactFlow, type Edge, type Node, type ReactFlowInstance } from '@xyflow/react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { Check, Code2, ExternalLink, FileCode2, GitBranch, HardDrive, Maximize2, Plus, Search, Settings2, Terminal, Trash2 } from 'lucide-react';
 import { findDetourLane, GraphEdge, graphNodeSize } from './GraphEdge';
-import { api, json, routeLabel, type Model, type Route, type SecretOperation, type Theme } from './lib';
+import { json, routeLabel, type Model, type Route, type SecretOperation, type Theme } from './lib';
 import { VisualRoutes } from './VisualRoutes';
 import { useVault } from './VaultView';
 
 type Props = {
   model: Model | null;
+  onDirty: (dirty: boolean) => void;
+  onCreateConfiguration: () => void;
   theme: Theme;
   focusHost?: string;
   onSaved: (model: Model) => void;
@@ -130,7 +133,8 @@ function graphElements(model: Model | null, selectedRoute: string, selectedHost:
   return { nodes, edges };
 }
 
-export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, openTransfer, onError }: Props) {
+export function ConfigView({ onCreateConfiguration, onDirty, model, theme, focusHost, onSaved, openTerminal, openTransfer, onError }: Props) {
+  const { api, config } = useConfiguration();
   const { status: vaultStatus, refresh: refreshVault } = useVault();
   const vaultEntriesId = useId();
   useEffect(() => { refreshVault().catch(() => {}); }, [refreshVault]);
@@ -182,10 +186,14 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
     (method === 'key' || method === 'env' || method === 'vault') && !visual?.nodes[name]?.[authReferences[method].field]);
   const dirty = !!model && (rawText !== model.text || visualDirty || Object.keys(secretOperations).length > 0 || !!missingAuthReference);
   useEffect(() => {
+    onDirty(dirty);
     const guard = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener('beforeunload', guard);
-    return () => window.removeEventListener('beforeunload', guard);
-  }, [dirty]);
+    return () => {
+      onDirty(false);
+      window.removeEventListener('beforeunload', guard);
+    };
+  }, [dirty, onDirty]);
 
   const compose = async (working = visual, text = rawText) => {
     if (!working) throw new Error('Конфигурация ещё не загружена');
@@ -251,7 +259,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
       const candidate = visualDirty ? (await compose()).text : rawText;
       const updated = await api<Model>('/config', json('PUT', { text: candidate, version: model.version, secret_operations: secretOperations }));
       onSaved(updated);
-      setMessage('Сохранено. Предыдущая версия находится в config.toml.bak');
+      setMessage(`Сохранено. Предыдущая версия находится в ${config}.bak`);
     } catch (error) { onError(error); } finally { setBusy(false); }
   };
   const check = async () => {
@@ -342,7 +350,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
       : host?.key_file ? 'key' : host?.agent ? 'agent' : '');
 
   return <div className="page config-page">
-    <div className="page-title"><div><h1>Конфигурация {dirty && <span className="dirty-dot" title="Есть несохранённые изменения" aria-label="Есть несохранённые изменения"/>}</h1><p>Хосты, маршруты и исходный TOML</p></div><div className="title-actions"><button className="subtle" disabled={busy} onClick={check}><Check size={16}/> Проверить</button><button className="primary" disabled={busy || !model || !dirty} onClick={save}>{busy ? 'Подождите…' : 'Сохранить'}</button></div></div>
+    <div className="page-title"><div><h1>Конфигурация {dirty && <span className="dirty-dot" title="Есть несохранённые изменения" aria-label="Есть несохранённые изменения"/>}</h1><p>Хосты, маршруты и исходный TOML</p></div><div className="title-actions"><button className="subtle" disabled={busy} onClick={onCreateConfiguration}><Plus size={16}/> Создать конфигурацию</button><button className="subtle" disabled={busy} onClick={check}><Check size={16}/> Проверить</button><button className="primary" disabled={busy || !model || !dirty} onClick={save}>{busy ? 'Подождите…' : 'Сохранить'}</button></div></div>
     <div className="config-toolbar"><div className="segmented"><button className={mode === 'graph' ? 'on' : ''} onClick={() => switchMode('graph')}><GitBranch size={15}/> Граф</button><button className={mode === 'visual' ? 'on' : ''} onClick={() => switchMode('visual')}><Settings2 size={15}/> Визуально</button><button className={mode === 'raw' ? 'on' : ''} onClick={() => switchMode('raw')}><Code2 size={15}/> TOML</button></div><span className={message && !message.startsWith('Сохранено') && !message.startsWith('config OK') ? 'config-error' : ''}>{message}</span></div>
     {mode === 'graph' && <div className="graph-layout"><PanelGroup key={stackGraph ? 'vertical' : 'horizontal'} direction={stackGraph ? 'vertical' : 'horizontal'}><Panel minSize={stackGraph ? 35 : 48} defaultSize={stackGraph ? 55 : 72}><div className="graph-canvas"><ReactFlow colorMode={theme === 'dark' ? 'dark' : 'light'} nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={instance => { flow.current = instance; }} onNodeClick={(_, node) => { if (node.id !== 'local') { setSelectedHost(node.id); setInspector('host'); } }} fitView minZoom={.2} maxZoom={2}><Background color="var(--graph-dot)" gap={22}/><FlowPanel position="top-left" className="graph-tools"><button title="Показать весь граф" onClick={() => flow.current?.fitView({ duration: 250, padding: .2 })}><Maximize2 size={15}/> Весь граф</button><button title="Сбросить масштаб" onClick={() => flow.current?.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 250 })}>100%</button><button title="Приблизить" onClick={() => flow.current?.zoomIn({ duration: 200 })}>+</button><button title="Отдалить" onClick={() => flow.current?.zoomOut({ duration: 200 })}>−</button></FlowPanel></ReactFlow><div className="graph-legend"><span className="legend-line"/> Стрелки показывают настроенные переходы</div></div></Panel><PanelResizeHandle className={stackGraph ? 'resize-handle vertical' : 'resize-handle'}/><Panel minSize={stackGraph ? 30 : 20} defaultSize={stackGraph ? 45 : 28}><div className="graph-side"><div className="side-heading">Маршруты <span>{filteredRoutes.length}</span></div><div className="graph-filter"><div className="search"><Search size={15}/><input aria-label="Поиск маршрута" placeholder="Маршрут или хост" value={routeSearch} onChange={event => setRouteSearch(event.target.value)}/></div><select aria-label="Фильтр по цели" value={routeTarget} onChange={event => setRouteTarget(event.target.value)}><option value="">Все цели</option>{[...new Set(visual?.routes.map(item => item.target) || [])].sort().map(target => <option key={target}>{target}</option>)}</select></div><div className="graph-route-list">{filteredRoutes.map(item => <button key={item.name} className={selectedRoute === item.name ? 'active' : ''} onClick={() => chooseRoute(item)}><GitBranch size={15}/><span><strong>{item.name}</strong><small>{routeLabel(item)}</small></span></button>)}</div><div className="graph-inspector"><div className="inspector-tabs"><button className={inspector === 'route' ? 'active' : ''} onClick={() => setInspector('route')}>Маршрут</button><button className={inspector === 'host' ? 'active' : ''} onClick={() => setInspector('host')}>Хост</button></div>{inspector === 'route' ? route ? <div className="inspector-body"><h3>{route.name}</h3><p>Цель: <strong>{route.target}</strong></p><ol>{['local', ...route.hops].map((hop, index) => <li key={index}>{hop}</li>)}</ol><div className="inspector-actions"><button onClick={() => openTerminal(route.target, route.name)}><Terminal size={14}/> Терминал</button><button onClick={() => openTransfer(route.target, route.name)}><ExternalLink size={14}/> Файлы</button></div></div> : <p className="inspector-empty">Выберите маршрут, чтобы увидеть точную цепочку.</p> : host ? <div className="inspector-body"><h3>{selectedHost}</h3><p>{host.user}@{host.host}:{host.port || 22}</p><p>Маршрутов: {visual?.routes.filter(item => item.target === selectedHost).length || 0}</p><div className="inspector-actions"><button onClick={() => openTerminal(selectedHost, '')}><Terminal size={14}/> Терминал</button><button onClick={() => openTransfer(selectedHost, '')}><ExternalLink size={14}/> Файлы</button><button onClick={() => { setVisualSection('hosts'); switchMode('visual'); }}><Settings2 size={14}/> Изменить</button></div></div> : <p className="inspector-empty">Выберите узел графа или хост слева.</p>}</div></div></Panel></PanelGroup></div>}
     {mode === 'visual' && <div className="visual-shell">
@@ -428,7 +436,7 @@ export function ConfigView({ model, theme, focusHost, onSaved, openTerminal, ope
         </div> : visual && <VisualRoutes model={visual} onChange={changeVisual}/>}
       </fieldset>
     </div>}
-    {mode === 'raw' && <div className="raw-editor"><div className="raw-head"><FileCode2 size={16}/> config.toml {dirty && <span>● Несохранённые изменения</span>}</div><div className="raw-notice">Встроенные пароли скрыты из текста. При сохранении прежние значения остаются на сервере; пароли настраиваются в разделе «Визуально → Хосты».</div><Editor language="toml" beforeMount={definePickme} theme={editorThemes[theme]} wrapperProps={{ className: 'raw-editor-body' }} value={rawText} onChange={value => { generation.current++; setRawText(value || ''); setMessage(''); }} options={{ readOnly: busy, fontSize: 14, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false, lineNumbers: 'on', wordWrap: 'on' }}/><div className="raw-foot">Сначала проверка CLI, затем атомарная запись и резервная копия</div></div>}
+    {mode === 'raw' && <div className="raw-editor"><div className="raw-head"><FileCode2 size={16}/> {config} {dirty && <span>● Несохранённые изменения</span>}</div><div className="raw-notice">Встроенные пароли скрыты из текста. При сохранении прежние значения остаются на сервере; пароли настраиваются в разделе «Визуально → Хосты».</div><Editor language="toml" beforeMount={definePickme} theme={editorThemes[theme]} wrapperProps={{ className: 'raw-editor-body' }} value={rawText} onChange={value => { generation.current++; setRawText(value || ''); setMessage(''); }} options={{ readOnly: busy, fontSize: 14, minimap: { enabled: false }, automaticLayout: true, scrollBeyondLastLine: false, lineNumbers: 'on', wordWrap: 'on' }}/><div className="raw-foot">Сначала проверка CLI, затем атомарная запись и резервная копия</div></div>}
   </div>;
 }
 
