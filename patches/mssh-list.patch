@@ -1,0 +1,70 @@
+--- a/src/config_selection.rs
++++ b/src/config_selection.rs
+@@ -15,5 +15,6 @@
+ fn first_host(args: &[String]) -> Option<&str> {
+     match args {
++        [command, target, _] if matches!(command.as_str(), "ls" | "stat") => Some(target),
+         [command, target] if command == "status" || command == "transfers" => Some(target),
+         [command, check] if command == "config" && check == "check" => None,
+         [command] if command == "status" || command == "serve" => None,
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -178,6 +178,14 @@
+             };
+             service::ssh(&config, target, options).await?
+         },
++        [command, target, path] if command == "ls" => {
++            let target = config.resolve_node_name(target).context("unknown host")?;
++            service::list_directory(&config, target, path).await?;
++        }
++        [command, target, path] if command == "stat" => {
++            let target = config.resolve_node_name(target).context("unknown host")?;
++            println!("{}", service::path_is_directory(&config, target, path).await?);
++        }
+         [source, destination] => {
+             debug_log!("preparing copy: {source} -> {destination}");
+             let plan = service::prepare_copy(&config, source, destination, cli.recursive).await?;
+@@ -193,7 +201,7 @@
+                 println!("transfer complete: {source} -> {destination}");
+             }
+         }
+-        _ => bail!("usage: mssh TARGET | mssh SOURCE DESTINATION | mssh status [TARGET] | mssh transfers TARGET | mssh config check | mssh vault encrypt INPUT | mssh vault decrypt OUTPUT | mssh serve"),
++        _ => bail!("usage: mssh TARGET | mssh SOURCE DESTINATION | mssh status [TARGET] | mssh transfers TARGET | mssh ls TARGET PATH | mssh stat TARGET PATH | mssh config check | mssh vault encrypt INPUT | mssh vault decrypt OUTPUT | mssh serve"),
+     }
+     Ok(())
+ }
+--- a/src/service.rs
++++ b/src/service.rs
+@@ -477,3 +477,32 @@
++pub async fn list_directory(config: &Config, target: &str, path: &str) -> Result<()> {
++    let connection = transfer::connect_any(config, target).await?;
++    let sftp = transfer::sftp(&connection).await?;
++    let path = sftp.canonicalize(path).await?;
++    let mut entries = Vec::new();
++    for entry in sftp.read_dir(&path).await? {
++        let name = entry.file_name();
++        if name.is_empty() || name == "." || name == ".." || name.contains('/') {
++            continue;
++        }
++        let metadata = entry.metadata();
++        let directory = metadata.file_type().is_dir();
++        let size = if directory { None } else { metadata.size };
++        entries.push((directory, name, size));
++    }
++    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
++    let entries: Vec<_> = entries.into_iter().map(|(directory, name, size)| {
++        serde_json::json!({ "name": name, "directory": directory, "size": size })
++    }).collect();
++    println!("{}", serde_json::json!({ "path": path, "entries": entries }));
++    Ok(())
++}
++
++pub async fn path_is_directory(config: &Config, target: &str, path: &str) -> Result<bool> {
++    let connection = transfer::connect_any(config, target).await?;
++    let sftp = transfer::sftp(&connection).await?;
++    Ok(sftp.metadata(path).await?.file_type().is_dir())
++}
++
+ pub enum CopySource {
+     Local(PathBuf),
+     Remote(String),

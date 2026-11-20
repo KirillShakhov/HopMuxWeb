@@ -1,17 +1,89 @@
+import { useConfiguration } from './ConfigurationContext';
 import { useEffect, useState } from 'react';
-import { Monitor, Moon, Shield, Terminal } from 'lucide-react';
-import { api, type UiSettings } from './lib';
+import { Check, GitBranch, Monitor, Plus, RefreshCw, Shield, Terminal } from 'lucide-react';
+import { themes, type UiSettings } from './lib';
 
-type Props = { settings: UiSettings; setSettings: React.Dispatch<React.SetStateAction<UiSettings>> };
+type Props = {
+  settings: UiSettings;
+  setSettings: React.Dispatch<React.SetStateAction<UiSettings>>;
+  configurations: string[];
+  configurationError: string;
+  enabledConfigurations: string[];
+  onToggleConfiguration: (name: string) => void;
+  onRefreshConfigurations: () => void;
+  onCreateConfiguration: () => void;
+};
 
-export function SettingsView({ settings, setSettings }: Props) {
+export function SettingsView({ settings, setSettings, configurations, configurationError, enabledConfigurations, onToggleConfiguration, onRefreshConfigurations, onCreateConfiguration }: Props) {
+  const { api } = useConfiguration();
   const [about, setAbout] = useState<{ ui: string; backend: string; cli: string } | null>(null);
-  useEffect(() => { api<typeof about>('/about').then(setAbout).catch(() => {}); }, []);
+  useEffect(() => { api<typeof about>('/about').then(setAbout).catch(() => {}); }, [api]);
   const update = <K extends keyof UiSettings>(key: K, value: UiSettings[K]) => setSettings(previous => ({ ...previous, [key]: value }));
-  return <div className="page settings-page"><div className="settings-inner"><div className="page-title"><div><div className="eyebrow">ПРЕДПОЧТЕНИЯ</div><h1>Настройки</h1><p>Настройки интерфейса сохраняются в этом браузере. TOML CLI находится в разделе «Конфигурация».</p></div></div><div className="settings-grid">
-    <div className="card settings-card"><div className="settings-icon"><Moon size={19}/></div><h2>Внешний вид</h2><p>Тема и плотность интерфейса · хранится в браузере</p><label>Тема<select value={settings.theme} onChange={event => update('theme', event.target.value as UiSettings['theme'])}><option value="dark">Тёмная</option><option value="light">Светлая</option></select></label><label>Плотность<select value={settings.density} onChange={event => update('density', event.target.value as UiSettings['density'])}><option value="comfortable">Обычная</option><option value="compact">Компактная</option></select></label></div>
-    <div className="card settings-card"><div className="settings-icon"><Terminal size={19}/></div><h2>Терминал</h2><p>Отображение PTY · хранится в браузере</p><label>Цвета терминала<select value={settings.terminalTheme} onChange={event => update('terminalTheme', event.target.value as UiSettings['terminalTheme'])}><option value="follow">Как в интерфейсе</option><option value="dark">Тёмные</option><option value="light">Светлые</option></select></label><label>Размер шрифта<input type="number" min="10" max="24" value={settings.fontSize} onChange={event => update('fontSize', Number(event.target.value))}/></label><label>Строк в истории<input type="number" min="100" max="50000" value={settings.scrollback} onChange={event => update('scrollback', Number(event.target.value))}/></label></div>
-    <div className="card settings-card"><div className="settings-icon"><Monitor size={19}/></div><h2>Рабочее место и передачи</h2><p>Вкладки и подтверждения · хранится в браузере</p><label className="settings-check"><input type="checkbox" checked={settings.restoreTabs} onChange={event => update('restoreTabs', event.target.checked)}/><span>Восстанавливать вкладки после обновления</span></label><label className="settings-check"><input type="checkbox" checked={settings.confirmClose} onChange={event => update('confirmClose', event.target.checked)}/><span>Подтверждать закрытие при активной передаче</span></label><label className="settings-check"><input type="checkbox" checked={settings.confirmTransfer} onChange={event => update('confirmTransfer', event.target.checked)}/><span>Подтверждать запуск передачи</span></label></div>
-    <div className="card settings-card"><div className="settings-icon"><Shield size={19}/></div><h2>Диагностика</h2><p>Версии возвращает сервер; конфиг и история задач хранятся в контейнере.</p><div className="version-row"><span>Интерфейс</span><strong>{about?.ui || '—'}</strong></div><div className="version-row"><span>Backend</span><strong>{about?.backend || '—'}</strong></div><div className="version-row"><span>mssh CLI</span><strong>{about?.cli || '—'}</strong></div></div>
-  </div></div></div>;
+
+  return <div className="page settings-page">
+    <div className="page-title"><div><h1>Настройки</h1><p>Предпочтения сохраняются в этом браузере.</p></div></div>
+    <div className="settings-grid">
+      <section className="card settings-card appearance-card">
+        <h2>Внешний вид</h2>
+        <fieldset className="theme-options">
+          <legend>Тема интерфейса</legend>
+          <div className="theme-option-list">
+            {themes.map(([theme, label]) => <label key={theme} className="theme-option">
+              <input type="radio" name="appearance-theme" value={theme} checked={settings.theme === theme} onChange={() => update('theme', theme)}/>
+              <span className="theme-preview" data-preview={theme} aria-hidden="true"><i/><i/><i/></span>
+              <span className="theme-option-name">{label}{settings.theme === theme && <Check size={16} aria-hidden="true"/>}</span>
+            </label>)}
+          </div>
+        </fieldset>
+        <label>Плотность интерфейса
+          <select value={settings.density} onChange={event => update('density', event.target.value as UiSettings['density'])}>
+            <option value="comfortable">Обычная</option><option value="compact">Компактная</option>
+          </select>
+        </label>
+      </section>
+      <section className="card settings-card">
+        <h2><GitBranch size={18}/> Конфигурации</h2>
+        {configurations.map(name => {
+          const enabled = enabledConfigurations.includes(name);
+          return <label key={name} className="settings-check">
+            <input type="checkbox" checked={enabled} disabled={enabled && enabledConfigurations.length === 1} onChange={() => onToggleConfiguration(name)}/>
+            <span className="configuration-filename">{name}</span>
+          </label>;
+        })}
+        {configurationError && <p className="error-box" role="alert">{configurationError}</p>}
+        <div className="title-actions">
+          <button className="primary" onClick={onCreateConfiguration}><Plus size={16}/> Создать конфигурацию</button>
+          <button className="subtle" onClick={onRefreshConfigurations}><RefreshCw size={16}/> Обновить список</button>
+        </div>
+      </section>
+      <section className="card settings-card">
+        <h2><Terminal size={18}/> Терминал</h2>
+        <label>Цвета терминала
+          <select value={settings.terminalTheme} onChange={event => update('terminalTheme', event.target.value as UiSettings['terminalTheme'])}>
+            <option value="follow">Как в интерфейсе</option><option value="dark">Тёмные</option><option value="light">Светлые</option>
+          </select>
+        </label>
+        <div className="form-grid">
+          <label>Размер шрифта<input type="number" min="10" max="24" value={settings.fontSize} onChange={event => update('fontSize', Number(event.target.value))}/></label>
+          <label>Строк в истории<input type="number" min="100" max="50000" value={settings.scrollback} onChange={event => update('scrollback', Number(event.target.value))}/></label>
+        </div>
+        <label className="settings-check">
+          <input type="checkbox" checked={settings.hideUnpinnedHostKeyWarnings} onChange={event => update('hideUnpinnedHostKeyWarnings', event.target.checked)}/>
+          Скрывать предупреждения об отсутствии закреплённого отпечатка SSH
+        </label>
+      </section>
+      <section className="card settings-card">
+        <h2><Monitor size={18}/> Рабочее место и передачи</h2>
+        <label className="settings-check"><input type="checkbox" checked={settings.restoreTabs} onChange={event => update('restoreTabs', event.target.checked)}/> Восстанавливать вкладки после обновления</label>
+        <label className="settings-check"><input type="checkbox" checked={settings.confirmClose} onChange={event => update('confirmClose', event.target.checked)}/> Подтверждать закрытие при активной передаче</label>
+        <label className="settings-check"><input type="checkbox" checked={settings.confirmTransfer} onChange={event => update('confirmTransfer', event.target.checked)}/> Подтверждать запуск передачи</label>
+      </section>
+      <section className="card settings-card">
+        <h2><Shield size={18}/> Версии</h2>
+        <div className="version-row"><span>Интерфейс</span><strong>{about?.ui || '—'}</strong></div>
+        <div className="version-row"><span>Backend</span><strong>{about?.backend || '—'}</strong></div>
+        <div className="version-row"><span>mssh CLI</span><strong>{about?.cli || '—'}</strong></div>
+      </section>
+    </div>
+  </div>;
 }

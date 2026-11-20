@@ -7,6 +7,11 @@ __pycache__/
 data/
 config/config.toml
 config/config.toml.bak
+config/vault.json
+config/*.vault
+config/.hopmux-vault-*
+config/.hopmux-vaults/
+config/.hopmux-write-*
 files/
 *.tsbuildinfo
 test-stand/

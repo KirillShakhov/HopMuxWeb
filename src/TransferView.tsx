@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react';
-import { ArrowDownToLine, ArrowUpFromLine, ExternalLink, File, FolderOpen, RefreshCw, Upload, X } from 'lucide-react';
-import { api, json, stateLabel, type Model, type Transfer, type UiSettings } from './lib';
+import { useConfiguration } from './ConfigurationContext';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, ArrowUpFromLine, Download, ExternalLink, File, FolderOpen, RefreshCw, X } from 'lucide-react';
+import { FilePane, fileChild, useFilePane } from './FilePane';
+import { json, stateLabel, transferDraft, type FileEndpoint, type Model, type Transfer, type TransferDraft, type UiSettings } from './lib';
+import { useVault } from './VaultView';
 
 type Props = {
   model: Model | null;
@@ -9,59 +12,168 @@ type Props = {
   initialTarget?: string;
   initialRoute?: string;
   focusedId?: string;
+  transferIds?: string[];
   separate?: boolean;
   onCreated?: (transferId: string) => void;
   onRefresh: () => void;
   onError: (error: unknown) => void;
 };
 
-export function TransferView({ model, transfers, settings, initialTarget = '', initialRoute = '', focusedId, separate = false, onCreated, onRefresh, onError }: Props) {
-  const [target, setTarget] = useState(initialTarget);
-  const [route, setRoute] = useState(initialRoute);
-  const [direction, setDirection] = useState<'upload' | 'download'>('upload');
-  const [local, setLocal] = useState('');
-  const [remote, setRemote] = useState('');
-  const [recursive, setRecursive] = useState(false);
-  const [verify, setVerify] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [files, setFiles] = useState<{ name: string; directory: boolean; size: number | null }[]>([]);
-  const [selectedTask, setSelectedTask] = useState(focusedId || '');
-  useEffect(() => { api<{ entries: typeof files }>('/files').then(result => setFiles(result.entries)).catch(() => {}); }, []);
-  useEffect(() => { if (focusedId) setSelectedTask(focusedId); }, [focusedId]);
+const endpointLabel = ({ host, path }: FileEndpoint) => host ? host + ':' + path : path === '.' ? '/files' : '/files/' + path;
+type CopyDraft = TransferDraft & { names?: string[] };
 
+export function TransferView({ model, transfers, settings, initialTarget = '', initialRoute = '', focusedId, transferIds, separate = false, onCreated, onRefresh, onError }: Props) {
+  const { api, url } = useConfiguration();
+  const { request: vaultRequest } = useVault();
+  const left = useFilePane('', '', !separate);
+  const right = useFilePane(initialTarget, initialRoute, !separate);
+  const [draft, setDraft] = useState<CopyDraft>();
+  const draftForm = useRef<HTMLFormElement>(null);
+  const hasDraft = Boolean(draft);
+  const [startErrors, setStartErrors] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [selectedTask, setSelectedTask] = useState(focusedId || '');
   const selected = transfers.find(item => item.id === selectedTask);
   const visible = separate ? transfers.filter(item => item.id === focusedId) : [...transfers].reverse();
-  const start = async () => {
-    if (settings.confirmTransfer && !confirm(`${direction === 'upload' ? 'Отправить' : 'Скачать'} ${direction === 'upload' ? '/files/' + local : target + ':' + remote} → ${direction === 'upload' ? target + ':' + remote : '/files/' + local}?`)) return;
-    setBusy(true);
-    try {
-      const created = await api<Transfer>('/transfers', json('POST', { target, route, direction, local, remote, recursive, verify }));
-      setSelectedTask(created.id);
-      onCreated?.(created.id);
-      onRefresh();
-    } catch (error) { onError(error); } finally { setBusy(false); }
+
+  useEffect(() => { if (focusedId) setSelectedTask(focusedId); }, [focusedId]);
+  useEffect(() => { if (hasDraft) draftForm.current?.scrollIntoView({ block: 'nearest' }); }, [hasDraft]);
+  const { refresh: refreshLeft } = left;
+  const { refresh: refreshRight } = right;
+  const completed = transfers
+    .filter(item => item.state === 'done' && (item.id === selectedTask || transferIds?.includes(item.id)))
+    .map(item => item.id).join(',');
+  useEffect(() => {
+    if (!separate && completed) {
+      refreshLeft();
+      refreshRight();
+    }
+  }, [completed, separate, refreshLeft, refreshRight]);
+
+  const openDraft = (next: CopyDraft) => {
+    setStartErrors([]);
+    setDraft(next);
   };
-  const uploadFromBrowser = async (file: globalThis.File) => {
-    const form = new FormData(); form.append('file', file);
-    try {
-      await api('/files/upload', { method: 'POST', body: form });
-      setLocal(file.name);
-      const result = await api<{ entries: typeof files }>('/files');
-      setFiles(result.entries);
-    } catch (error) { onError(error); }
+
+  const prepare = (from: typeof left, to: typeof right) => {
+    const name = from.selected[0]?.name;
+    const destinationPath = to.directory?.path ?? '';
+    if (from.selected.length > 1) {
+      openDraft({
+        source: from.endpoint,
+        destination: { ...to.endpoint, path: destinationPath },
+        names: from.selected.map(entry => entry.name),
+        verify: false,
+      });
+      return;
+    }
+    openDraft({
+      source: { ...from.endpoint, path: name ? fileChild(from.endpoint.path, name) : '' },
+      destination: { ...to.endpoint, path: name && destinationPath ? fileChild(destinationPath, name) : '' },
+      verify: false,
+    });
+  };
+
+  const start = async ({ names, ...job }: CopyDraft) => {
+    const prompt = names
+      ? `Копировать выбранные элементы (${names.length}) в ${endpointLabel(job.destination)}?`
+      : `Копировать ${endpointLabel(job.source)} → ${endpointLabel(job.destination)}?`;
+    if (settings.confirmTransfer && !confirm(prompt)) return;
+    const jobs = names ? names.map(name => ({
+      source: { ...job.source, path: fileChild(job.source.path, name) },
+      destination: { ...job.destination, path: fileChild(job.destination.path, name) },
+      verify: job.verify,
+    })) : [job];
+    setBusy(true);
+    setStartErrors([]);
+    const failed: number[] = [];
+    const errors: string[] = [];
+    let started = 0;
+    for (const [index, transfer] of jobs.entries()) {
+      try {
+        const created = await vaultRequest(() => api<Transfer>('/transfers', json('POST', transfer)));
+        started++;
+        setSelectedTask(created.id);
+        onCreated?.(created.id);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          for (let remaining = index; remaining < jobs.length; remaining++) failed.push(remaining);
+          break;
+        }
+        failed.push(index);
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(names ? `${names[index]} — ${message}` : message);
+      }
+    }
+    setDraft(failed.length ? { ...job, names: names && failed.map(index => names[index]) } : undefined);
+    setStartErrors(errors);
+    setBusy(false);
+    if (started) onRefresh();
   };
 
   return <div className="transfer-view">
-    <div className="tool-head"><div className="tool-identity"><span className="tool-icon"><ArrowUpFromLine size={16}/></span><strong>{separate ? 'Передача файла' : 'Передача файлов'}</strong><span className="route-label">Контейнер /files ↔ SSH-хост</span></div><div className="tool-actions">{selected && <button title="Открыть эту же операцию в новом окне" onClick={() => window.open('/?transfer=' + selected.id, '_blank')}><ExternalLink size={16}/></button>}</div></div>
+    <div className="tool-head">
+      <div className="tool-identity"><span className="tool-icon"><ArrowUpFromLine size={16}/></span><strong>{separate ? 'Передача файла' : 'Передача файлов'}</strong></div>
+      <div className="tool-actions">{selected && <button title="Открыть эту же операцию в новом окне" aria-label="Открыть операцию в новом окне" onClick={() => window.open(url('/?transfer=' + selected.id), '_blank')}><ExternalLink size={16}/></button>}</div>
+    </div>
     <div className="transfer-scroll">
-      {!separate && <div className="transfer-form"><div className="segmented"><button className={direction === 'upload' ? 'on' : ''} onClick={() => setDirection('upload')}><ArrowUpFromLine size={15}/> Отправить</button><button className={direction === 'download' ? 'on' : ''} onClick={() => setDirection('download')}><ArrowDownToLine size={15}/> Скачать</button></div>
-        <p className="transfer-explainer">«Локальный» означает каталог <code>/files</code>, примонтированный в контейнер. Файл с компьютера браузера сначала загрузите кнопкой ниже.</p>
-        <div className="form-grid"><label>SSH-хост<select value={target} onChange={event => { setTarget(event.target.value); setRoute(''); }}><option value="">Выберите хост</option>{Object.keys(model?.nodes || {}).sort().map(name => <option key={name}>{name}</option>)}</select></label><label>Маршрут<select value={route} onChange={event => setRoute(event.target.value)}><option value="">Автоматически: все доступные</option>{model?.routes.filter(item => item.target === target && !item.disabled).map(item => <option key={item.name} value={item.name}>{item.name} · local → {item.hops.join(' → ')}</option>)}</select></label><label>{direction === 'upload' ? 'Источник в /files' : 'Назначение в /files'}<input value={local} onChange={event => setLocal(event.target.value)} placeholder="archive.zip" list="local-files"/><datalist id="local-files">{files.map(file => <option value={file.name} key={file.name}/>)}</datalist></label><label>{direction === 'upload' ? 'Назначение на SSH-хосте' : 'Источник на SSH-хосте'}<input value={remote} onChange={event => setRemote(event.target.value)} placeholder="/home/user/archive.zip"/></label></div>
-        <div className="transfer-options"><label><input type="checkbox" checked={recursive} onChange={event => setRecursive(event.target.checked)}/> Директория</label><label><input type="checkbox" checked={verify} onChange={event => setVerify(event.target.checked)}/> Проверить SHA-256</label></div>
-        <div className="form-actions"><button className="primary" onClick={start} disabled={busy || !target || !local || !remote}>{busy ? 'Запуск…' : 'Начать передачу'}</button><label className="subtle upload-button" title="Сначала поместить файл браузера в /files"><Upload size={15}/> Загрузить с компьютера<input type="file" hidden onChange={event => { const file = event.target.files?.[0]; if (file) uploadFromBrowser(file); }}/></label></div>
+      {!separate && <div className="file-manager">
+        <div className="file-panels">
+          <FilePane title="Левая панель" model={model} pane={left}/>
+          <FilePane title="Правая панель" model={model} pane={right}/>
+        </div>
+        <div className="file-copy-actions">
+          <button type="button" className="subtle" aria-label="Копировать слева направо" disabled={busy || !left.endpoint.host && !right.endpoint.host} onClick={() => prepare(left, right)}>Копировать <ArrowRight size={16}/></button>
+          <button type="button" className="subtle" aria-label="Копировать справа налево" disabled={busy || !left.endpoint.host && !right.endpoint.host} onClick={() => prepare(right, left)}><ArrowLeft size={16}/> Копировать</button>
+        </div>
+        {draft && <form ref={draftForm} className="file-copy-form" onSubmit={event => { event.preventDefault(); void start(draft); }}>
+          <div className="form-grid">
+            {draft.names ? <div className="file-copy-selection">
+              <p>Источник · {endpointLabel(draft.source)}</p>
+              <ul aria-label="Выбранные элементы">{draft.names.map(name => <li key={name}>{name}</li>)}</ul>
+            </div> : <label>Источник · {draft.source.host || '/files'}
+              <input aria-label="Путь источника" value={draft.source.path} required disabled={busy}
+                placeholder={draft.source.host ? '/путь/к/файлу' : 'каталог/файл'}
+                onChange={event => setDraft({ ...draft, source: { ...draft.source, path: event.target.value } })}/>
+            </label>}
+            <label>{draft.names ? 'Каталог назначения' : 'Назначение'} · {draft.destination.host || '/files'}
+              <input aria-label={draft.names ? 'Каталог назначения' : 'Путь назначения'} value={draft.destination.path} required disabled={busy}
+                placeholder={draft.destination.host ? '/путь/к/файлу' : 'каталог/файл'}
+                onChange={event => setDraft({ ...draft, destination: { ...draft.destination, path: event.target.value } })}/>
+            </label>
+          </div>
+          <div className="transfer-options">
+            <label><input type="checkbox" checked={draft.verify} disabled={busy} onChange={event => setDraft({ ...draft, verify: event.target.checked })}/> Проверить SHA-256</label>
+          </div>
+          {startErrors.length > 0 && <ul className="file-copy-errors" role="alert">
+            {startErrors.map((message, index) => <li key={index}>{message}</li>)}
+          </ul>}
+          <div className="file-copy-actions">
+            <button type="submit" className="primary" disabled={busy || !draft.source.path || !draft.destination.path}>{busy ? 'Запуск…' : 'Начать передачу'}</button>
+            <button type="button" className="subtle" disabled={busy} onClick={() => setDraft(undefined)}>Отмена</button>
+          </div>
+        </form>}
       </div>}
-      <div className="transfer-history"><h3>{separate ? 'Операция' : 'История передач'} <span>{visible.length}</span></h3>{visible.map(item => <div className={'transfer-item ' + (selectedTask === item.id ? 'chosen' : '')} key={item.id} onClick={() => setSelectedTask(item.id)}><div className="transfer-icon">{item.direction === 'upload' ? <ArrowUpFromLine size={17}/> : <ArrowDownToLine size={17}/>}</div><div className="transfer-info"><strong>{item.direction === 'upload' ? '/files/' + item.local : item.target + ':' + item.remote} <span>→</span> {item.direction === 'upload' ? item.target + ':' + item.remote : '/files/' + item.local}</strong><small>{item.route || 'Все маршруты'} · {item.logs.at(-1) || stateLabel[item.state] || item.state}</small></div><span className={'state-pill ' + item.state}>{stateLabel[item.state] || item.state}</span>{item.direction === 'download' && item.state === 'done' && <a href={'/api/files/download?path=' + encodeURIComponent(item.local)} title="Скачать на компьютер браузера" onClick={event => event.stopPropagation()}><ArrowDownToLine size={16}/></a>}{item.state === 'running' && <button title="Отменить" onClick={event => { event.stopPropagation(); api('/transfers/' + item.id + '/cancel', { method: 'POST' }).then(onRefresh).catch(onError); }}><X size={16}/></button>}{!separate && ['error', 'cancelled', 'interrupted'].includes(item.state) && <button title="Подставить параметры для повтора" onClick={event => { event.stopPropagation(); setTarget(item.target); setRoute(item.route); setDirection(item.direction); setLocal(item.local); setRemote(item.remote); }}><RefreshCw size={16}/></button>}</div>)}{!visible.length && <div className="empty-list"><FolderOpen size={24}/><p>{separate ? 'Операция не найдена' : 'Задачи появятся здесь после запуска передачи'}</p></div>}
-        {selected && <div className="transfer-detail"><div><File size={16}/><strong>Подробности операции</strong><code>{selected.id.slice(0, 12)}</code></div><pre>{selected.logs.join('\n') || 'CLI пока не сообщил подробности.'}</pre><p>Проценты, скорость и ETA не показываются: CLI не отдаёт надёжный поток этих данных.</p></div>}
+      <div className="transfer-history">
+        <h3>{separate ? 'Операция' : 'История передач'} <span>{visible.length}</span></h3>
+        {visible.map(item => {
+          const { source, destination, recursive, verify } = transferDraft(item);
+          const routes = [source, destination].filter(endpoint => endpoint.host).map(endpoint => endpoint.route || 'Автомаршрут');
+          const running = item.state === 'queued' || item.state === 'running';
+          const retryable = !separate && ['error', 'cancelled', 'interrupted'].includes(item.state);
+          return <div className={'transfer-item' + (selectedTask === item.id ? ' chosen' : '')} key={item.id}>
+            <button type="button" className="transfer-info" aria-pressed={selectedTask === item.id} onClick={() => setSelectedTask(item.id)}>
+              <strong>{endpointLabel(source)} → {endpointLabel(destination)}</strong>
+              <small>{routes.join(' → ')} · {item.logs.at(-1) || stateLabel[item.state] || item.state}</small>
+            </button>
+            <span className={'state-pill ' + item.state}>{stateLabel[item.state] || item.state}</span>
+            {!destination.host && !recursive && item.state === 'done' && <a href={'/api/files/download?' + new URLSearchParams({ path: destination.path })} aria-label="Скачать на компьютер" title="Скачать на компьютер"><Download size={16}/></a>}
+            {running && <button type="button" className="icon-button" title="Отменить передачу" aria-label="Отменить передачу" onClick={() => api('/transfers/' + item.id + '/cancel', { method: 'POST' }).then(onRefresh).catch(onError)}><X size={16}/></button>}
+            {retryable && <button type="button" className="icon-button" title="Повторить передачу" aria-label="Повторить передачу" disabled={busy} onClick={() => openDraft({ source, destination, verify })}><RefreshCw size={16}/></button>}
+          </div>;
+        })}
+        {!visible.length && <div className="empty-list"><FolderOpen size={24}/><p>{separate ? 'Операция не найдена' : 'Задачи появятся здесь после запуска передачи'}</p></div>}
+        {selected && <div className="transfer-detail"><div><File size={16}/><strong>Подробности операции</strong><code>{selected.id.slice(0, 12)}</code></div><pre>{selected.logs.join('\n') || 'CLI пока не сообщил подробности.'}</pre></div>}
       </div>
     </div>
   </div>;

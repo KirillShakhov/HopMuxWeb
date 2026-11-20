@@ -1,10 +1,17 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router';
 import '@xyflow/react/dist/style.css';
 import '@xterm/xterm/css/xterm.css';
+import './theme.css';
 import './style.css';
 import './graph.css';
-import './polish.css';
 import { App } from './App';
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
+createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>,
+);

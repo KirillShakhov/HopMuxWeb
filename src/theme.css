@@ -1,0 +1,85 @@
+:root {
+  color-scheme: light;
+  --canvas: #f6f7fa;
+  --surface: #ffffff;
+  --surface-muted: #f8f9fc;
+  --hover: #edf0f6;
+  --ink: #192132;
+  --muted: #5a6578;
+  --line: #e0e5ee;
+  --line-control: #cbd3e1;
+  --accent: #3051cf;
+  --accent-hover: #233ca6;
+  --accent-on: #ffffff;
+  --accent-text: #2d49ad;
+  --accent-surface: #edf1ff;
+  --accent-line: #bac8ff;
+  --good: #16734d;
+  --good-surface: #e9f7ef;
+  --info: #2d49ad;
+  --info-surface: #edf1ff;
+  --bad: #ab303a;
+  --bad-surface: #fff0f1;
+  --warn: #835503;
+  --warn-surface: #fff5dc;
+  --graph-dot: #cbd4e4;
+  --graph-edge: #7b8aa6;
+  --shadow: 0 1px 2px #15223e0b, 0 8px 22px #15223e06;
+  --hero-glow: #eaf0ff;
+  --panel-column: 212px;
+  --gutter: clamp(18px, 2.7vw, 40px);
+  --radius: 12px;
+  --control-radius: 8px;
+  --control-height: 38px;
+  --mono: 'Cascadia Code', Consolas, monospace;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas: #101114;
+  --surface: #18191e;
+  --surface-muted: #1e2026;
+  --hover: #272a32;
+  --ink: #f4f4f6;
+  --muted: #a8adbc;
+  --line: #2d3039;
+  --line-control: #424653;
+  --accent: #a9b8ff;
+  --accent-hover: #c2ccff;
+  --accent-on: #151c40;
+  --accent-text: #c1ccff;
+  --accent-surface: #232c49;
+  --accent-line: #43558c;
+  --good: #82dcb2;
+  --good-surface: #193329;
+  --info: #c1ccff;
+  --info-surface: #232c49;
+  --bad: #ffacb4;
+  --bad-surface: #392127;
+  --warn: #f0cb83;
+  --warn-surface: #362c1c;
+  --graph-dot: #343a4b;
+  --graph-edge: #7885a3;
+  --shadow: 0 1px 3px #0004;
+  --hero-glow: #1a1e33;
+}
+
+:root[data-theme='pickme'] {
+  --canvas: #fcf3fa;
+  --surface: #fffaff;
+  --surface-muted: #fbf0fa;
+  --hover: #f5e7f5;
+  --ink: #392638;
+  --muted: #74576f;
+  --line: #eddbe9;
+  --line-control: #d7bbd4;
+  --accent: #a12a72;
+  --accent-hover: #86205e;
+  --accent-text: #8b2866;
+  --accent-surface: #f8e5f4;
+  --accent-line: #e8bade;
+  --graph-dot: #e5cce3;
+  --graph-edge: #a581a8;
+  --shadow: 0 1px 3px #80377314, 0 8px 24px #a8468610;
+  --hero-glow: #f0e4ff;
+}

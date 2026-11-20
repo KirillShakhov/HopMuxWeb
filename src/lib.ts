@@ -4,6 +4,7 @@ export type Host = {
   port?: number;
   key_file?: string;
   password_env?: string;
+  password_vault?: string;
   host_key?: string;
   agent?: boolean;
   has_inline_password?: boolean;
@@ -30,28 +31,81 @@ export type Model = {
   parse_error?: string;
 };
 
-export type HostKeyWarning = { node: string; kind: string; fingerprint: string | null };
+export type HostKeyWarning = {
+  node: string;
+  kind: 'unpinned' | 'mismatch' | 'rejected';
+  fingerprint: string | null;
+  expected?: string | null;
+  id?: string;
+  host?: string;
+  port?: number;
+  route_path?: string;
+};
 export type Session = {
   id: string;
   target: string;
   route: string;
   active_route?: string;
   state: string;
+  running: boolean;
   error: string;
   warnings?: HostKeyWarning[];
   created?: number;
 };
 
+export const isResumableSession = (session: Session) =>
+  ['connected', 'connecting', 'verifying_host_key', 'disconnected'].includes(session.state);
+
+export const terminalWindowUrl = (sessionId: string, target?: string, route?: string) => {
+  const params = new URLSearchParams({ session: sessionId });
+  if (target) params.set('host', target);
+  if (route) params.set('route', route);
+  return `/?${params}`;
+};
+
+export const sessionLabel = (session: Session) => {
+  const route = session.active_route || session.route || 'Автоматический маршрут';
+  const started = session.created ? new Date(session.created * 1000).toLocaleString('ru-RU') : session.id.slice(0, 8);
+  return `${route} · ${started}`;
+};
+
+export type FileEndpoint = { host: string; route: string; path: string };
+
+export type TransferDraft = {
+  source: FileEndpoint;
+  destination: FileEndpoint;
+  verify: boolean;
+};
+
+type TransferDetails = TransferDraft & { recursive: boolean };
+
 export type Transfer = {
   id: string;
+  state: string;
+  logs: string[];
+} & (TransferDetails | {
+  source?: undefined;
   target: string;
   route: string;
   direction: 'upload' | 'download';
   local: string;
   remote: string;
-  state: string;
-  logs: string[];
-};
+});
+
+export function transferDraft(item: Transfer): TransferDetails {
+  if (item.source) {
+    const { source, destination, recursive, verify } = item;
+    return { source, destination, recursive, verify };
+  }
+  const local = { host: '', route: '', path: item.local };
+  const remote = { host: item.target, route: item.route, path: item.remote };
+  return {
+    source: item.direction === 'upload' ? local : remote,
+    destination: item.direction === 'upload' ? remote : local,
+    recursive: false,
+    verify: false,
+  };
+}
 
 export type Tab = {
   id: string;
@@ -59,6 +113,7 @@ export type Tab = {
   title: string;
   sessionId?: string;
   transferId?: string;
+  transferIds?: string[];
   target?: string;
   route?: string;
 };
@@ -70,12 +125,21 @@ export type Layout = {
   direction: 'horizontal' | 'vertical';
 };
 
+export const themes = [
+  ['light', 'Светлая'],
+  ['dark', 'Тёмная'],
+  ['pickme', 'Пикми'],
+] as const;
+
+export type Theme = typeof themes[number][0];
+
 export type UiSettings = {
-  theme: 'dark' | 'light';
+  theme: Theme;
   density: 'comfortable' | 'compact';
   fontSize: number;
   scrollback: number;
   terminalTheme: 'follow' | 'dark' | 'light';
+  hideUnpinnedHostKeyWarnings: boolean;
   restoreTabs: boolean;
   confirmClose: boolean;
   confirmTransfer: boolean;
@@ -84,11 +148,12 @@ export type UiSettings = {
 export type SecretOperation = { action: 'keep' | 'replace' | 'remove'; value?: string };
 
 export const defaultSettings: UiSettings = {
-  theme: 'dark',
+  theme: 'light',
   density: 'comfortable',
   fontSize: 14,
   scrollback: 5000,
   terminalTheme: 'follow',
+  hideUnpinnedHostKeyWarnings: false,
   restoreTabs: true,
   confirmClose: true,
   confirmTransfer: true,
@@ -97,6 +162,12 @@ export const defaultSettings: UiSettings = {
 export const initialLayout: Layout = {
   panels: [[]], active: {}, maximized: null, direction: 'horizontal',
 };
+
+export class ApiError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch('/api' + path, {
@@ -107,7 +178,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).detail || detail; } catch { /* non-JSON error */ }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status);
   }
   return res.json();
 }

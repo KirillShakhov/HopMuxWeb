@@ -1,4 +1,5 @@
 """Local adapter smoke test using the actual mssh release binary."""
+import json
 import os
 import sys
 import tempfile
@@ -11,10 +12,10 @@ root = Path(tempfile.mkdtemp(prefix="hopmuxweb-smoke-"))
 config = root / "config" / "config.toml"
 config.write_text('direct_hosts = ["edge"]\npaths = []\n[nodes.edge]\nhost = "example.com"\nuser = "alice"\nagent = true\n', encoding="utf-8")
 os.environ["HOPMUX_CONFIG"] = str(config)
+os.environ["HOPMUX_VAULT_FILE"] = str(config.with_name("vault.json"))
 os.environ["HOPMUX_DATA"] = str(root / "data")
 os.environ["HOPMUX_FILES"] = str(root / "files")
 os.environ["HOPMUX_TOKEN"] = "smoke-token"
-os.environ["HOPMUX_CLI"] = "/tmp/mssh-linux-x86_64/mssh"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from server.app import app, route_model  # noqa: E402
@@ -82,4 +83,129 @@ with TestClient(app) as client:
     removed = client.put('/api/config', json={'text': replaced.json()['text'] + '\nagent = true\n', 'version': replaced.json()['version'], 'secret_operations': {'edge': {'action': 'remove'}}})
     assert removed.status_code == 200, removed.text
     assert 'password' not in config.read_text(encoding='utf-8')
+
+    assert client.get("/api/vault").json() == {"exists": False, "unlocked": False, "entries": []}
+    master = "Тестовый мастер-пароль"
+    unlock = {"password": master, "confirmation": master}
+    created_vault = client.post("/api/vault/create", json=unlock)
+    assert created_vault.status_code == 200, created_vault.text
+    assert created_vault.json()["unlocked"]
+    entry = {"name": "edge-auth", "password": "synthetic-vault-entry"}
+    saved_entry = client.put("/api/vault/entries", json=entry)
+    assert saved_entry.status_code == 200, saved_entry.text
+    assert saved_entry.json()["entries"] == ["edge-auth"]
+    assert entry["password"] not in saved_entry.text
+    backup = client.get("/api/vault/backup")
+    assert backup.status_code == 200 and backup.json()["version"] == 1
+    assert master not in backup.text and entry["password"] not in backup.text
+    config.write_text(config.read_text(encoding="utf-8") + '\npassword_vault = "edge-auth"\n', encoding="utf-8")
+    assert client.request("DELETE", "/api/vault/entries", json={"name": "edge-auth"}).status_code == 409
+    with TestClient(app) as other:
+        assert other.post("/api/login", json={"token": "smoke-token"}).status_code == 200
+        assert other.get("/api/vault").json() == {"exists": True, "unlocked": False, "entries": []}
+        assert other.post("/api/probe/edge").status_code == 423
+        assert other.post("/api/vault/unlock", json={"password": master}).status_code == 200
+        rotation = client.post("/api/vault/rotate", json={"password": "rotated", "confirmation": "rotated"})
+        assert rotation.status_code == 200, rotation.text
+        assert not other.get("/api/vault").json()["unlocked"]
+    assert client.post("/api/vault/lock").status_code == 200
+    assert client.post("/api/vault/unlock", json={"password": master}).status_code == 400
+    assert client.post("/api/vault/unlock", json={"password": "rotated"}).json()["entries"] == ["edge-auth"]
+
+    config.write_text(
+        'direct_hosts = ["edge"]\n[nodes.edge]\nhost = "edge.test.invalid"\nuser = "alice"\npassword = "last-line-secret"',
+        encoding="utf-8",
+    )
+    draft = client.get("/api/config").json()
+    draft["nodes"]["new_host"] = {"host": "new.test.invalid", "user": "alice", "password_vault": "edge-auth"}
+    composed = client.post("/api/config/compose", json={"text": draft["text"], "model": draft, "legacy": draft["legacy"]})
+    assert composed.status_code == 200, composed.text
+    assert "last-line-secret" not in composed.text
+    saved = client.put("/api/config", json={"text": composed.json()["text"], "version": draft["version"]})
+    assert saved.status_code == 200, saved.text
+    actual = tomlkit.parse(config.read_text(encoding="utf-8"))["nodes"]
+    assert actual["edge"]["password"] == "last-line-secret"
+    assert actual["new_host"]["password_vault"] == "edge-auth"
+    assert "last-line-secret" not in saved.text
+
+    lab = config.with_name("lab.toml")
+    fragment = config.with_name("hosts.toml")
+    fragment.write_text('[nodes.extra]\nhost = "extra.test.invalid"\nuser = "alice"\nagent = true\n', encoding="utf-8")
+    lab.write_text('include = ["hosts.toml"]\ndirect_hosts = ["edge"]\n[nodes.edge]\nhost = "lab.test.invalid"\nuser = "alice"\nagent = true\n', encoding="utf-8")
+    assert client.get("/api/configurations").json() == {
+        "files": ["config.toml", "lab.toml"], "default": "config.toml", "legacy": "config.toml",
+    }
+    assert client.get("/api/config", params={"config": "../lab.toml"}).status_code == 404
+    assert client.get("/api/config", params={"config": "hosts.toml"}).status_code == 404
+    original = config.read_text(encoding="utf-8")
+    params = {"config": "lab.toml"}
+    loaded_lab = client.get("/api/config", params=params).json()
+    candidate = loaded_lab["text"].replace("lab.test.invalid", "lab-updated.test.invalid")
+    saved_lab = client.put("/api/config", params=params, json={"text": candidate, "version": loaded_lab["version"]})
+    assert saved_lab.status_code == 200, saved_lab.text
+    assert "lab-updated.test.invalid" in lab.read_text(encoding="utf-8")
+    assert config.read_text(encoding="utf-8") == original
+    assert client.get("/api/vault", params=params).json()["unlocked"]
+    assert client.request("DELETE", "/api/vault/entries", params=params, json={"name": "edge-auth"}).status_code == 409
+
+    assert client.post("/api/configurations", json={"name": "../outside"}).status_code == 400
+    assert client.post("/api/configurations", json={"name": "lab.toml"}).status_code == 409
+    created = client.post("/api/configurations", json={"name": "Новая конфигурация"})
+    assert created.status_code == 201, created.text
+    name = created.json()["name"]
+    assert name == "Новая конфигурация.toml"
+    assert name in created.json()["catalog"]["files"]
+    params = {"config": name}
+    blank = client.get("/api/config", params=params).json()
+    assert blank["nodes"] == {}
+    first_host = '[nodes.first]\nhost = "first.test.invalid"\nuser = "alice"\nagent = true\n'
+    assert client.put("/api/config", params=params, json={"text": first_host, "version": blank["version"]}).status_code == 200
+    assert client.get("/api/config", params=params).json()["nodes"]["first"]["host"] == "first.test.invalid"
+    assert config.read_text(encoding="utf-8") == original
+
+    lab_scope = {"config": "lab.toml"}
+    first_scope = {"config": name}
+    named_login = {"password": "lab-master", "confirmation": "lab-master"}
+    named = client.post("/api/vaults", params=lab_scope, json={"name": "Лаборатория", **named_login})
+    assert named.status_code == 201, named.text
+    vault_id = named.json()["selected"]
+    assert vault_id != "shared"
+    assert lab.read_text(encoding="utf-8").startswith(f"# hopmuxweb-vault = {vault_id}\n")
+    model = client.get("/api/config", params=lab_scope).json()
+    assert "hopmuxweb-vault" not in model["text"]
+    assert model["version"] == saved_lab.json()["version"]
+    edited_lab = model["text"].replace("lab-updated.test.invalid", "vault-bound.test.invalid")
+    saved_again = client.put("/api/config", params=lab_scope, json={"text": edited_lab, "version": model["version"]})
+    assert saved_again.status_code == 200, saved_again.text
+    assert lab.read_text(encoding="utf-8").startswith(f"# hopmuxweb-vault = {vault_id}\n")
+    assert "hopmuxweb-vault" not in saved_again.json()["text"]
+    assert named.json()["status"] == {"exists": True, "unlocked": True, "entries": []}
+    assert client.get("/api/vault").json()["entries"] == ["edge-auth"]
+    assert client.post("/api/vaults", params=first_scope, json={"name": "лаборатория", **named_login}).status_code == 409
+    assert client.put("/api/vault/entries", params={**lab_scope, "vault": "shared"}, json=entry).status_code == 409
+    assert client.put("/api/vault/entries", params=lab_scope, json=entry).status_code == 200
+    assert client.request("DELETE", "/api/vault/entries", params=lab_scope, json={"name": "edge-auth"}).status_code == 200
+    assert client.get("/api/vault").json()["entries"] == ["edge-auth"]
+    assert client.put("/api/vault/entries", params=lab_scope, json={"name": "lab-entry", "password": "lab-secret"}).status_code == 200
+    assert client.post("/api/vault/lock", params=lab_scope).status_code == 200
+    assert client.get("/api/vault").json()["unlocked"]
+    assert client.post("/api/vault/unlock", params=lab_scope, json={"password": "rotated"}).status_code == 400
+    assert client.post("/api/vault/unlock", params=lab_scope, json=named_login).json()["entries"] == ["lab-entry"]
+    reused = client.put("/api/vault/binding", params=first_scope, json={"id": vault_id})
+    assert reused.json()["status"]["entries"] == ["lab-entry"]
+    assert client.put("/api/vault/binding", params=lab_scope, json={"id": "shared"}).json()["status"]["entries"] == ["edge-auth"]
+    catalog_file = config.parent / ".hopmux-vaults" / "catalog.json"
+    catalog_text = catalog_file.read_text(encoding="utf-8")
+    assert "lab-master" not in catalog_text
+    catalog = json.loads(catalog_text)
+    assert catalog["bindings"] == {}
+    lab.write_text(saved_again.json()["text"], encoding="utf-8")
+    catalog["bindings"]["lab.toml"] = vault_id
+    catalog_file.write_text(json.dumps(catalog), encoding="utf-8")
+
+with TestClient(app) as migrated:
+    assert migrated.post("/api/login", json={"token": "smoke-token"}).status_code == 200
+    assert migrated.get("/api/vaults", params=lab_scope).json()["selected"] == vault_id
+    assert lab.read_text(encoding="utf-8").startswith(f"# hopmuxweb-vault = {vault_id}\n")
+    assert json.loads(catalog_file.read_text(encoding="utf-8"))["bindings"] == {}
 print("Smoke checks passed")
