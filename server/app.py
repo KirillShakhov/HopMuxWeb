@@ -1168,6 +1168,19 @@ def copy_routes(model, source, destination):
     return remotes, names
 
 
+async def remote_source_is_directory(source, route, access):
+    args = ["--config", str(active_config.get())]
+    if route:
+        args += ["--route", route]
+    code, out, stderr = await cli_run(*args, "--", "stat", source["host"], source["path"], timeout=45, access=access)
+    if code:
+        error(stderr.strip().splitlines()[-1] if stderr.strip() else "Не удалось проверить удалённый источник", 502)
+    directory = out.strip()
+    if directory not in ("true", "false"):
+        error("mssh не вернул тип удалённого источника", 502)
+    return directory == "true"
+
+
 @app.post("/api/transfers")
 async def create_transfer(request: Request):
     body = await request.json()
@@ -1184,7 +1197,13 @@ async def create_transfer(request: Request):
     remote_copy = bool(source["host"] and destination["host"])
     remotes, routes = copy_routes(model, source, destination)
     access = vault_access(request, model, *((end["host"], end["route"]) for end in remotes))
-    recursive, verify = bool(body.get("recursive")), bool(body.get("verify"))
+    if "recursive" in body:
+        recursive = bool(body["recursive"])
+    elif source["host"]:
+        recursive = await remote_source_is_directory(source, remotes[0]["route"], access)
+    else:
+        recursive = Path(from_arg).is_dir()
+    verify = bool(body.get("verify"))
     item = {"id": uuid.uuid4().hex, "config": active_config.get().name, "source": source, "destination": destination, "recursive": recursive,
             "verify": verify, "state": "queued", "created": time.time(), "logs": deque(maxlen=100)}
     if not remote_copy:

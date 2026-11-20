@@ -47,7 +47,6 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
     setDraft({
       source: { ...from.endpoint, path: name ? fileChild(from.endpoint.path, name) : '' },
       destination: { ...to.endpoint, path: name && to.directory ? fileChild(destinationPath, name) : '' },
-      recursive: Boolean(from.selected?.directory),
       verify: false,
     });
   };
@@ -97,7 +96,6 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
             </label>
           </div>
           <div className="transfer-options">
-            <label><input type="checkbox" checked={draft.recursive} disabled={busy} onChange={event => setDraft({ ...draft, recursive: event.target.checked })}/> Копировать каталог целиком</label>
             <label><input type="checkbox" checked={draft.verify} disabled={busy} onChange={event => setDraft({ ...draft, verify: event.target.checked })}/> Проверить SHA-256</label>
           </div>
           <div className="file-copy-actions">
@@ -109,8 +107,7 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
       <div className="transfer-history">
         <h3>{separate ? 'Операция' : 'История передач'} <span>{visible.length}</span></h3>
         {visible.map(item => {
-          const job = transferDraft(item);
-          const { source, destination } = job;
+          const { source, destination, recursive, verify } = transferDraft(item);
           const routes = [source, destination].filter(endpoint => endpoint.host).map(endpoint => endpoint.route || 'Автомаршрут');
           const running = item.state === 'queued' || item.state === 'running';
           const retryable = !separate && ['error', 'cancelled', 'interrupted'].includes(item.state);
@@ -120,9 +117,9 @@ export function TransferView({ model, transfers, settings, initialTarget = '', i
               <small>{routes.join(' → ')} · {item.logs.at(-1) || stateLabel[item.state] || item.state}</small>
             </button>
             <span className={'state-pill ' + item.state}>{stateLabel[item.state] || item.state}</span>
-            {!destination.host && !job.recursive && item.state === 'done' && <a href={'/api/files/download?' + new URLSearchParams({ path: destination.path })} aria-label="Скачать на компьютер" title="Скачать на компьютер"><Download size={16}/></a>}
+            {!destination.host && !recursive && item.state === 'done' && <a href={'/api/files/download?' + new URLSearchParams({ path: destination.path })} aria-label="Скачать на компьютер" title="Скачать на компьютер"><Download size={16}/></a>}
             {running && <button type="button" className="icon-button" title="Отменить передачу" aria-label="Отменить передачу" onClick={() => api('/transfers/' + item.id + '/cancel', { method: 'POST' }).then(onRefresh).catch(onError)}><X size={16}/></button>}
-            {retryable && <button type="button" className="icon-button" title="Повторить передачу" aria-label="Повторить передачу" disabled={busy} onClick={() => setDraft(job)}><RefreshCw size={16}/></button>}
+            {retryable && <button type="button" className="icon-button" title="Повторить передачу" aria-label="Повторить передачу" disabled={busy} onClick={() => setDraft({ source, destination, verify })}><RefreshCw size={16}/></button>}
           </div>;
         })}
         {!visible.length && <div className="empty-list"><FolderOpen size={24}/><p>{separate ? 'Операция не найдена' : 'Задачи появятся здесь после запуска передачи'}</p></div>}

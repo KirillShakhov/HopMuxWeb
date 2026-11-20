@@ -74,15 +74,16 @@ export type FileEndpoint = { host: string; route: string; path: string };
 export type TransferDraft = {
   source: FileEndpoint;
   destination: FileEndpoint;
-  recursive: boolean;
   verify: boolean;
 };
+
+type TransferDetails = TransferDraft & { recursive: boolean };
 
 export type Transfer = {
   id: string;
   state: string;
   logs: string[];
-} & (TransferDraft | {
+} & (TransferDetails | {
   source?: undefined;
   target: string;
   route: string;
@@ -91,7 +92,7 @@ export type Transfer = {
   remote: string;
 });
 
-export function transferDraft(item: Transfer): TransferDraft {
+export function transferDraft(item: Transfer): TransferDetails {
   if (item.source) {
     const { source, destination, recursive, verify } = item;
     return { source, destination, recursive, verify };
