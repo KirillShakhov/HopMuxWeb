@@ -1,5 +1,6 @@
 services:
   hopmuxweb:
+    image: ghcr.io/kirillshakhov/hopmuxweb:${HOPMUX_IMAGE_TAG:-local}
     build:
       context: .
       args:

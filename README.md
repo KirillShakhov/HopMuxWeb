@@ -2,7 +2,41 @@
 
 Локальная веб-оболочка для MultiHopSSH (`mssh`). Browser → React/TypeScript → FastAPI + WebSocket → `mssh` CLI → SSH. Dockerfile сверяет SHA-256 исходников **v1.2.0** и собирает CLI с командой `mssh ls HOST PATH` для просмотра каталогов по SFTP. [Релиз MultiHopSSH](https://github.com/KirillShakhov/MultiHopSSH/releases/tag/1.2.0)
 
-## Запуск
+## Быстрый старт с Docker Compose
+
+Сохраните блок в `compose.yaml`.
+
+```yaml
+services:
+  hopmuxweb:
+    image: ghcr.io/kirillshakhov/hopmuxweb:${HOPMUX_IMAGE_TAG:?Set a published tag in .env}
+    network_mode: host
+    environment:
+      HOPMUX_TOKEN: ${HOPMUX_TOKEN:?Set a strong HOPMUX_TOKEN in .env}
+      HOPMUX_BIND: 127.0.0.1
+      HOPMUX_PORT: 4444
+    volumes:
+      - ~/.config/mssh:/config
+      - ${SSH_DIR:-${HOME}/.ssh}:/home/hopmux/.ssh:ro
+      - ./files:/files
+      - hopmux-data:/data
+    restart: unless-stopped
+
+volumes:
+  hopmux-data:
+```
+
+Создайте рядом `.env` и задайте `HOPMUX_TOKEN` для входа. В `HOPMUX_IMAGE_TAG` укажите опубликованный тег версии. GitHub Actions собирает образ для `linux/amd64` при пуше тега и публикует его в [GitHub Container Registry](https://github.com/KirillShakhov/HopMuxWeb/pkgs/container/hopmuxweb).
+
+Если пакет приватный, перед запуском выполните `docker login ghcr.io`. Готовый образ использует UID и GID 10001 для доступа к смонтированным каталогам.
+
+```sh
+docker compose up -d
+```
+
+Откройте [http://127.0.0.1:4444](http://127.0.0.1:4444) и войдите с токеном из `.env`.
+
+## Сборка из исходников
 
 Укажите токен в локальном `.env`. Если у вас ещё нет `~/.config/mssh/config.toml`, возьмите за основу `config/config.toml.example` и задайте хост, пользователя и способ аутентификации. Локальный `.env` исключён из Git и Docker build context.
 
@@ -62,7 +96,7 @@ HopMuxWeb читает и записывает штатный `vault.json` че�
 
 ## Интеграционный SSH-стенд
 
-Стенд из соседнего репозитория HopMux создаёт пять альтернативных маршрутов к `target`, общие jump hosts, отдельные сети и ограничения скорости. Тестовый веб-контейнер использует тот же релизный образ, но отдельный конфиг и порт `127.0.0.1:8081`; основной экземпляр на `8080` не меняется. Тестовый контейнер запускается от root только для чтения закрытого ключа стенда из Docker volume.
+Стенд из соседнего репозитория HopMux создаёт пять альтернативных маршрутов к `target`, общие jump hosts, отдельные сети и ограничения скорости. Тестовый веб-контейнер использует тот же образ, что и основной Compose, с отдельным конфигом и портом `127.0.0.1:8081`. Тестовый контейнер запускается от root только для чтения закрытого ключа стенда из Docker volume.
 
 ```powershell
 cd C:\Users\kirill\Pets\HopMux
@@ -71,6 +105,7 @@ docker compose -f compose.test.yaml up -d --build --wait --wait-timeout 900
 cd C:\Users\kirill\Pets\HopMuxWeb
 New-Item -ItemType Directory -Path test-stand\config,test-stand\files -Force
 docker cp hopmux-test-client-1:/data/config.toml test-stand\config\config.toml
+docker compose build
 docker compose -f compose.stand.yaml up -d
 docker compose -f compose.stand.yaml exec -T web python -u /tests/stand_e2e.py
 ```
